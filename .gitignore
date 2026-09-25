@@ -1,0 +1,34 @@
+# Зависимости
+node_modules/
+.pnp
+.pnp.js
+
+# Сборка
+dist/
+dist-ssr/
+*.local
+
+# Логи
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Редактор и ОС
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Окружение (переменные среды)
+.env
+.env.*
+!.env.example
+
+# Типизация (TypeScript)
+*.tsbuildinfo
