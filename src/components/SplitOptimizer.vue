@@ -1,7 +1,10 @@
 <!-- src/components/SplitOptimizer.vue -->
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { DollarSign, TrendingDown, PieChart, ShoppingCart, Check, TrendingUp } from '@lucide/vue'
+// Строго импортируем иконки только из @lucide/vue
+import { DollarSign, TrendingDown, PieChart, ShoppingCart, Check, Download, FileSpreadsheet, FileJson } from '@lucide/vue'
+// Импортируем сервис экспорта
+import { ExportService } from '@/services/ExportService'
 
 // Тип для отдельной позиции в закупке
 interface PurchaseItem {
@@ -103,10 +106,51 @@ const getSupplierBadgeClass = (supplierName: string) => {
   if (supplier?.colorClass === 'bg-emerald-500') return 'bg-emerald-100 text-emerald-800 border-emerald-200'
   return 'bg-gray-100 text-gray-800 border-gray-200'
 }
+
+// Функции для обработки экспорта
+const handleExportExcel = () => {
+  // Экспортируем только список элементов заказа в CSV (как имитацию Excel)
+  ExportService.exportToExcel(items.value, 'optimization_results')
+}
+
+const handleExportJson = () => {
+  // Экспортируем все данные: и сводку, и элементы заказа
+  const exportData = {
+    summary: summary.value,
+    items: items.value
+  }
+  ExportService.exportToJson(exportData, 'optimization_results')
+}
 </script>
 
 <template>
   <div class="flex flex-col gap-6 w-full max-w-6xl mx-auto">
+    <!-- Заголовок страницы и действия (Экспорт) -->
+    <div class="flex items-center justify-between mb-2">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900">Матрица Сплит-Оптимизатора</h1>
+        <p class="text-gray-500 mt-1">Результаты распределения заказа для достижения минимального чека</p>
+      </div>
+      
+      <!-- Блок действий (кнопки экспорта) -->
+      <div class="flex items-center gap-3">
+        <button 
+          @click="handleExportExcel"
+          class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
+        >
+          <FileSpreadsheet class="w-4 h-4" />
+          Скачать Excel
+        </button>
+        <button 
+          @click="handleExportJson"
+          class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
+        >
+          <FileJson class="w-4 h-4" />
+          Скачать JSON
+        </button>
+      </div>
+    </div>
+
     <!-- Верхняя секция: Сводка (Дашборд) -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
       
@@ -238,4 +282,3 @@ const getSupplierBadgeClass = (supplierName: string) => {
     </div>
   </div>
 </template>
-
