@@ -1,5 +1,82 @@
-# Vue 3 + TypeScript + Vite
+# 📦 Архитектура и описание проекта TradeSync (Frontend)
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Документ содержит полное описание архитектуры, дерева каталогов, назначения компонентов и структуры клиентской части системы TradeSync.
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+## 🌲 Дерево проекта
+
+```text
+TradeSync_project/
+├── .env                    # Переменные окружения (VITE_API_URL и др.)
+├── .github/                # Настройки CI/CD и GitHub Actions
+├── .vscode/                # Настройки редактора локального окружения
+├── public/                 # Статические ресурсы
+├── src/
+│   ├── api/                # Слой сетевого взаимодействия
+│   │   ├── auth.ts         # API-вызовы для авторизации и регистрации
+│   │   └── client.ts       # Настройка инстанса Axios с интерцепторами токена
+│   ├── assets/             # Изображения, иконки, глобальные стили
+│   ├── components/         # Переиспользуемые UI-компоненты
+│   │   ├── MatchingTable.vue   # Компонент ручной валидации (Active Learning)
+│   │   └── SplitOptimizer.vue  # Дашборд оптимизатора матрицы закупок
+│   ├── composables/        # Vue-композаблы (хуки)
+│   ├── router/             # Настройки Vue Router и Guard-логика (доступы по ролям)
+│   ├── services/           # Бизнес-логика вне компонентов
+│   │   └── ExportService.ts    # Сервис генерации Blob для JSON/CSV (Excel) выгрузки
+│   ├── store/              # Стейт-менеджмент (Pinia)
+│   │   └── authStore.ts    # Хранилище сессии пользователя и JWT-токена
+│   ├── views/              # Страницы приложения
+│   │   ├── LoginView.vue       # Страница авторизации
+│   │   ├── DashboardView.vue   # Главная панель
+│   │   ├── UploadView.vue      # Страница загрузки прайс-листов
+│   │   ├── ValidationView.vue  # Экран ML-валидации
+│   │   └── MatrixView.vue      # Экран матрицы распределения
+│   ├── App.vue             # Корневой компонент Vue
+│   ├── main.ts             # Точка входа в приложение (инициализация Vue, Pinia, Router)
+│   └── style.css           # Подключение Tailwind CSS
+├── index.html              # Главный HTML-шаблон
+├── package.json            # Манифест проекта и зависимости (npm)
+├── postcss.config.js       # Настройка PostCSS для Tailwind
+├── tailwind.config.js      # Конфигурация Tailwind CSS v4
+├── tsconfig.json           # Основная конфигурация TypeScript
+└── vite.config.ts          # Конфигурация сборщика Vite и прокси-сервера
+```
+
+## 📋 Навигация по ключевым модулям
+
+### 1. `src/api/client.ts` и `src/api/auth.ts`
+> **Назначение:** Связь с FastAPI бэкендом.
+
+В `client.ts` настроен экземпляр Axios с пустым `baseURL` для корректной работы через Vite Proxy. Имплементированы интерцепторы для автоматической передачи JWT-токена из `localStorage` в заголовке `Authorization: Bearer <token>` и очистки сессии при получении статуса 401 (Unauthorized). Файл `auth.ts` содержит сервисы отправки POST-запросов к `/auth/login` и `/auth/register`.
+
+### 2. `vite.config.ts`
+> **Назначение:** Сборка проекта и проксирование запросов в режиме разработки.
+
+Настроен `server.proxy`, который прозрачно перехватывает все запросы, начинающиеся на `/auth`, и перенаправляет их на локальный бэкенд `http://localhost:8000`, обходя ограничения CORS (Cross-Origin Resource Sharing).
+
+### 3. `src/store/authStore.ts`
+> **Назначение:** Глобальное хранилище данных сессии (на базе Pinia).
+
+Содержит экшены для вызова API авторизации, сохранения полученного JWT-токена в `localStorage` и эмуляции роли пользователя (`Admin`) для работы защищенных маршрутов (Vue Router Guard).
+
+### 4. Модули машинного обучения и оптимизации (Эпики 4 и 5)
+- **`MatchingTable.vue`**: Интерфейс ручной валидации (Active Learning) для проверки результатов сопоставления номенклатуры моделью ML. Реализована концепция Traffic Light UI на базе уверенности алгоритма (Confidence Score). Поддерживается ручная корректировка и сбор Audit Log.
+- **`SplitOptimizer.vue`**: Модуль визуализации результатов тендерного распределения (Сплит-Оптимизация). Отображает чистую экономию, долевое распределение по поставщикам и итоговую матрицу закупок.
+- **`ExportService.ts`**: Автономный класс-утилита для генерации файлов на стороне клиента (с использованием объектов `Blob`) и выгрузки спецификаций в форматах JSON и CSV (Excel-совместимых).
+
+## 🚀 Стек технологий
+* **Core:** Vue 3, TypeScript, Vite
+* **State & Routing:** Pinia, Vue Router
+* **Styling:** Tailwind CSS v4
+* **Networking:** Axios
+
+## 💻 Запуск проекта для разработки
+
+1. **Установка зависимостей:**
+   ```bash
+   npm install
+   ```
+2. **Запуск dev-сервера (вместе с Vite Proxy):**
+   ```bash
+   npm run dev
+   ```
+3. Локальный клиент запустится по адресу `http://localhost:5173`. Запросы авторизации будут автоматически проксироваться на `127.0.0.1:8000`.

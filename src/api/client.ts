@@ -3,20 +3,23 @@ import axios from 'axios'
 import type { AxiosError, InternalAxiosRequestConfig } from 'axios'
 
 // ---------------------------------------------------------------------------
-// Instance
+// Создание экземпляра Axios
 // ---------------------------------------------------------------------------
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1',
+  baseURL: '', // Убрали import.meta.env...
   headers: { 'Content-Type': 'application/json' },
   timeout: 15_000,
 })
 
+
 // ---------------------------------------------------------------------------
-// Request interceptor – attach JWT from sessionStorage
+// Интерцептор запросов (Request interceptor)
+// Автоматически добавляет JWT токен из localStorage в заголовок Authorization
 // ---------------------------------------------------------------------------
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    const token = sessionStorage.getItem('ts_token')
+    // Извлекаем токен из localStorage
+    const token = localStorage.getItem('ts_token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -26,22 +29,20 @@ apiClient.interceptors.request.use(
 )
 
 // ---------------------------------------------------------------------------
-// Response interceptor – handle 401 Unauthorized
-//
-// We dispatch a custom DOM event instead of importing the router directly.
-// This breaks any potential circular dependency:
-//   router → authStore → apiClient → router  ✗
-//   apiClient → CustomEvent → main.ts listener → router  ✓
+// Интерцептор ответов (Response interceptor)
+// Обработка ошибки 401 (Не авторизован)
 // ---------------------------------------------------------------------------
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response?.status === 401) {
-      // Clear persisted session data
+      // При ошибке авторизации очищаем данные
+      localStorage.removeItem('ts_token')
+      localStorage.removeItem('ts_user')
       sessionStorage.removeItem('ts_token')
       sessionStorage.removeItem('ts_user')
 
-      // Notify the app layer; main.ts (or App.vue) should listen and redirect
+      // Уведомляем приложение о необходимости редиректа на страницу логина
       window.dispatchEvent(new CustomEvent('tradesync:unauthorized'))
     }
     return Promise.reject(error)

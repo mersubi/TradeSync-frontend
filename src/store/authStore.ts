@@ -1,11 +1,11 @@
 // src/store/authStore.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { loginService } from '@/api/auth'
+import { authApi } from '@/api/auth'
 import type { LoginResponse } from '@/api/auth'
 
 // ---------------------------------------------------------------------------
-// Types (re-exported so router and components can import from one place)
+// Типы (Types)
 // ---------------------------------------------------------------------------
 export type UserRole = 'Operator' | 'Manager' | 'Admin'
 
@@ -17,18 +17,20 @@ export interface AuthUser {
 }
 
 // ---------------------------------------------------------------------------
-// Store
+// Хранилище (Store)
 // ---------------------------------------------------------------------------
 export const useAuthStore = defineStore('auth', () => {
-  // ── State ────────────────────────────────────────────────────────────────
+  // ── Состояние (State) ──────────────────────────────────────────────────
+  
+  // Читаем начальные данные из localStorage (ранее было sessionStorage)
   const user = ref<AuthUser | null>(
-    JSON.parse(sessionStorage.getItem('ts_user') ?? 'null'),
+    JSON.parse(localStorage.getItem('ts_user') ?? 'null'),
   )
-  const token = ref<string | null>(sessionStorage.getItem('ts_token'))
+  const token = ref<string | null>(localStorage.getItem('ts_token'))
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  // ── Getters ──────────────────────────────────────────────────────────────
+  // ── Геттеры (Getters) ──────────────────────────────────────────────────
   const isAuthenticated = computed(() => !!token.value && !!user.value)
   const userRole = computed<UserRole | null>(() => user.value?.role ?? null)
 
@@ -36,41 +38,59 @@ export const useAuthStore = defineStore('auth', () => {
     return !!userRole.value && roles.includes(userRole.value)
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  function _persist(response: LoginResponse): void {
-    user.value = response.user
-    token.value = response.token
-    sessionStorage.setItem('ts_user', JSON.stringify(response.user))
-    sessionStorage.setItem('ts_token', response.token)
+  // ── Вспомогательные функции (Helpers) ──────────────────────────────────
+  function _persist(tokenStr: string, userObj: AuthUser): void {
+    user.value = userObj
+    token.value = tokenStr
+    localStorage.setItem('ts_user', JSON.stringify(userObj))
+    localStorage.setItem('ts_token', tokenStr)
   }
 
   function _clearSession(): void {
     user.value = null
     token.value = null
-    sessionStorage.removeItem('ts_user')
-    sessionStorage.removeItem('ts_token')
+    localStorage.removeItem('ts_user')
+    localStorage.removeItem('ts_token')
   }
 
-  // ── Actions ──────────────────────────────────────────────────────────────
+  // ── Действия (Actions) ─────────────────────────────────────────────────
 
   /**
-   * Authenticate via the API service layer.
-   * Sets `isLoading` + `error` for UI feedback.
-   * Resolves with the authenticated user or rejects (and sets `error`) on failure.
+   * Функция логина.
+   * Вызывает реальный метод API, извлекает токен и хардкодит данные пользователя,
+   * пока на бэкенде не появится эндпоинт /me.
    */
   async function login(email: string, password: string): Promise<AuthUser> {
     isLoading.value = true
     error.value = null
 
     try {
-      const response = await loginService(email, password)
-      _persist(response)
-      return response.user
-    } catch (err) {
+      // Отправляем реальный запрос
+      const response = await authApi.login({ email, password })
+      
+      // Извлекаем токен (бэкенд может вернуть token или access_token)
+      const tokenStr = response.token || response.access_token
+      if (!tokenStr) {
+        throw new Error('Токен не был получен от сервера')
+      }
+
+      // Временно хардкодим пользователя (с ролью Admin, чтобы работали маршруты)
+      // В будущем здесь будет запрос к authApi.getMe() или извлечение из JWT
+      const mockUser: AuthUser = {
+        id: 'real-backend-mock-id',
+        name: 'John Doe',
+        email: email,
+        role: 'Admin' 
+      }
+
+      // Сохраняем состояние
+      _persist(tokenStr, mockUser)
+      return mockUser
+    } catch (err: any) {
       const message =
-        err instanceof Error ? err.message : 'An unexpected error occurred.'
+        err?.response?.data?.detail || err?.message || 'Произошла непредвиденная ошибка.'
       error.value = message
-      throw err // re-throw so the component can react (e.g. shake animation)
+      throw err 
     } finally {
       isLoading.value = false
     }
@@ -81,10 +101,10 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
   }
 
-  /** Called by the Axios 401 interceptor to silently clear the session. */
+  /** Вызывается при перехвате 401 ошибки в Axios */
   function forceLogout(): void {
     _clearSession()
-    error.value = 'Your session has expired. Please log in again.'
+    error.value = 'Срок действия вашей сессии истек. Пожалуйста, войдите снова.'
   }
 
   return {
