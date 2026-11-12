@@ -1,20 +1,23 @@
-<!-- src/components/MatchingTable.vue -->
+<!-- src/components/MatchingTable.vue
+     Таблица результатов ML-сопоставления с логикой «Светофор» и Active Learning.
+       • Каждая строка прайса показана рядом с найденной эталонной шиной.
+       • Цвет бейджа показывает уверенность модели (см. utils/confidence.ts).
+       • Для жёлтых и красных строк закупщик может выбрать другого кандидата —
+         исправления отправляются на сервер (PATCH /items/{id}) и используются
+         для дообучения модели (Active Learning).
+-->
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import {
-  CheckCircle,
-  AlertTriangle,
-  XCircle,
-  Info,
-  Send,
-  ShieldCheck,
-  Download,
-  RefreshCw,
-} from '@lucide/vue'
+import { CheckCircle2, Send, ShieldCheck, Download, RefreshCw, PackageOpen, AlertCircle } from '@lucide/vue'
 import { procurementApi } from '@/api/procurement'
 import type { RawOfferItemSchema, CandidateTire } from '@/api/procurement'
 import { ExportService } from '@/services/ExportService'
+import { getConfidenceLevel, type ConfidenceLevel } from '@/utils/confidence'
+import BaseButton from '@/components/ui/BaseButton.vue'
+import ConfidenceBadge from '@/components/ui/ConfidenceBadge.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
+// ── Props / Emits ─────────────────────────────────────────────────────────────
 const props = defineProps<{
   sessionId?: number | null
   sessionStatus?: string
@@ -25,129 +28,126 @@ const emit = defineEmits<{
   (e: 'approved'): void
 }>()
 
-// Тип для строки таблицы сопоставления
+// ── Тип строки таблицы ────────────────────────────────────────────────────────
+// Это «удобная для интерфейса» форма данных. С сервера приходит
+// RawOfferItemSchema, и функция mapBackendItemsToRows переводит её в MatchingRow.
 export interface MatchingRow {
   id: number
-  originalSupplierItem: string
+  originalSupplierItem: string      // как товар назван в прайсе поставщика
   price: number
   quantity: number
-  selectedTireId: number | null
-  initialTireId: number | null
+  selectedTireId: number | null     // текущий выбор (может изменить пользователь)
+  initialTireId: number | null      // что предложила модель (для сравнения)
   systemMatchCandidate: string
   initialCandidateName: string
   candidates: Array<{ tireId: number | null; label: string }>
-  confidenceScore: number // 0..100
+  confidence: number                // уверенность модели 0..1
   matchStatus: string
 }
 
-// Демо-данные на случай, если сессия еще не выбрана
+// ── Демо-данные (показываются, пока сессия не выбрана) ────────────────────────
 const defaultMockRows: MatchingRow[] = [
   {
-    id: 1,
-    originalSupplierItem: 'Шина Michelin X-Ice North 4 205/55 R16',
-    price: 8500,
-    quantity: 12,
-    selectedTireId: 101,
-    initialTireId: 101,
-    systemMatchCandidate: 'Michelin X-Ice North 4 205/55 R16 94T XL (шипованная)',
-    initialCandidateName: 'Michelin X-Ice North 4 205/55 R16 94T XL (шипованная)',
+    id: 1, originalSupplierItem: 'Шина Michelin X-Ice North 4 205/55 R16', price: 8500, quantity: 12,
+    selectedTireId: 101, initialTireId: 101,
+    systemMatchCandidate: 'Michelin X-Ice North 4 205/55 R16 94T XL', initialCandidateName: 'Michelin X-Ice North 4 205/55 R16 94T XL',
     candidates: [
-      { tireId: 101, label: 'Michelin X-Ice North 4 205/55 R16 94T XL (шипованная)' },
+      { tireId: 101, label: 'Michelin X-Ice North 4 205/55 R16 94T XL' },
       { tireId: 102, label: 'Michelin X-Ice North 4 205/55 R16 91T' },
-      { tireId: 103, label: 'Michelin X-Ice 3 205/55 R16' },
     ],
-    confidenceScore: 95,
-    matchStatus: 'AUTO',
+    confidence: 0.95, matchStatus: 'AUTO',
   },
   {
-    id: 2,
-    originalSupplierItem: 'Nokian Hakkapeliitta 10p 185/65 R15',
-    price: 7000,
-    quantity: 8,
-    selectedTireId: 201,
-    initialTireId: 201,
-    systemMatchCandidate: 'Nokian Tyres Hakkapeliitta 10p 185/65 R15',
-    initialCandidateName: 'Nokian Tyres Hakkapeliitta 10p 185/65 R15',
+    id: 2, originalSupplierItem: 'Nokian Hakkapeliitta 10p 185/65 R15', price: 7000, quantity: 8,
+    selectedTireId: 201, initialTireId: 201,
+    systemMatchCandidate: 'Nokian Tyres Hakkapeliitta 10p 185/65 R15', initialCandidateName: 'Nokian Tyres Hakkapeliitta 10p 185/65 R15',
     candidates: [
       { tireId: 201, label: 'Nokian Tyres Hakkapeliitta 10p 185/65 R15' },
       { tireId: 202, label: 'Nokian Tyres Hakkapeliitta 9 185/65 R15' },
-      { tireId: 203, label: 'Nokian Nordman 8 185/65 R15' },
     ],
-    confidenceScore: 88,
-    matchStatus: 'AUTO',
+    confidence: 0.88, matchStatus: 'AUTO',
   },
   {
-    id: 3,
-    originalSupplierItem: 'Pirelli Ice Zero 2 225/45',
-    price: 12000,
-    quantity: 4,
-    selectedTireId: 301,
-    initialTireId: 301,
-    systemMatchCandidate: 'Pirelli Ice Zero 2 225/45 R17 94T XL',
-    initialCandidateName: 'Pirelli Ice Zero 2 225/45 R17 94T XL',
+    id: 3, originalSupplierItem: 'Pirelli Ice Zero 2 225/45', price: 12000, quantity: 4,
+    selectedTireId: 301, initialTireId: 301,
+    systemMatchCandidate: 'Pirelli Ice Zero 2 225/45 R17 94T XL', initialCandidateName: 'Pirelli Ice Zero 2 225/45 R17 94T XL',
     candidates: [
       { tireId: 301, label: 'Pirelli Ice Zero 2 225/45 R17 94T XL' },
       { tireId: 302, label: 'Pirelli Ice Zero 2 225/45 R18 95T XL' },
       { tireId: 303, label: 'Pirelli Scorpion Ice Zero 2 225/45 R17' },
     ],
-    confidenceScore: 72,
-    matchStatus: 'NEEDS_REVIEW',
+    confidence: 0.72, matchStatus: 'NEEDS_REVIEW',
   },
   {
-    id: 4,
-    originalSupplierItem: 'Резина Летняя Bridgestone 205/55 R16',
-    price: 9000,
-    quantity: 10,
-    selectedTireId: 401,
-    initialTireId: 401,
-    systemMatchCandidate: 'Bridgestone Turanza T005 205/55 R16 91V',
-    initialCandidateName: 'Bridgestone Turanza T005 205/55 R16 91V',
+    id: 4, originalSupplierItem: 'Резина летняя Bridgestone 205/55 R16', price: 9000, quantity: 10,
+    selectedTireId: 401, initialTireId: 401,
+    systemMatchCandidate: 'Bridgestone Turanza T005 205/55 R16 91V', initialCandidateName: 'Bridgestone Turanza T005 205/55 R16 91V',
     candidates: [
       { tireId: 401, label: 'Bridgestone Turanza T005 205/55 R16 91V' },
       { tireId: 402, label: 'Bridgestone Potenza Sport 225/45 R17' },
       { tireId: 403, label: 'Bridgestone Alenza 001 215/60 R17' },
     ],
-    confidenceScore: 45,
-    matchStatus: 'UNMATCHED',
+    confidence: 0.45, matchStatus: 'UNMATCHED',
   },
 ]
 
-const rows = ref<MatchingRow[]>(JSON.parse(JSON.stringify(defaultMockRows)))
-const isLoading = ref(false)
+// structuredClone делает глубокую копию, чтобы правки не портили исходные демо-данные
+const rows         = ref<MatchingRow[]>(structuredClone(defaultMockRows))
+const isLoading    = ref(false)
 const isSubmitting = ref(false)
-const isApproving = ref(false)
-const showSuccessAlert = ref(false)
-const alertMessage = ref('Исправления отправлены')
+const isApproving  = ref(false)
+const successText  = ref<string | null>(null)
 const errorMessage = ref<string | null>(null)
 
-// Преобразование позиций бэкенда RawOfferItemSchema в строки таблицы
+// ── Фильтр по светофору ───────────────────────────────────────────────────────
+const activeFilter = ref<'all' | ConfidenceLevel>('all')
+
+// Сколько строк каждого цвета — для счётчиков на кнопках-фильтрах
+const counts = computed(() => {
+  const result = { all: rows.value.length, high: 0, medium: 0, low: 0 }
+  for (const r of rows.value) result[getConfidenceLevel(r.confidence)]++
+  return result
+})
+
+// Строки, которые реально показываются в таблице (с учётом фильтра)
+const visibleRows = computed(() =>
+  activeFilter.value === 'all'
+    ? rows.value
+    : rows.value.filter((r) => getConfidenceLevel(r.confidence) === activeFilter.value),
+)
+
+const filters = computed(() => [
+  { key: 'all' as const,    label: 'Все',        count: counts.value.all,    dot: 'bg-zinc-400' },
+  { key: 'high' as const,   label: 'Уверенные',  count: counts.value.high,   dot: 'bg-lime-500' },
+  { key: 'medium' as const, label: 'Проверить',  count: counts.value.medium, dot: 'bg-amber-500' },
+  { key: 'low' as const,    label: 'Исправить',  count: counts.value.low,    dot: 'bg-rose-500' },
+])
+
+// ── Преобразование данных сервера в строки таблицы ────────────────────────────
 function mapBackendItemsToRows(items: RawOfferItemSchema[]): MatchingRow[] {
   return items.map((item) => {
-    const rawScore = item.confidence_score ?? 0
-    // Бэкенд хранит confidence_score в диапазоне 0..1
-    const scorePercent = rawScore <= 1 ? Math.round(rawScore * 100) : Math.round(rawScore)
-
+    // Собираем список кандидатов без дубликатов
     const cands: Array<{ tireId: number | null; label: string }> = []
-    if (Array.isArray(item.candidates)) {
-      for (const c of item.candidates as CandidateTire[]) {
-        const tid = c.tire_id ?? c.id ?? null
-        const label = c.sku || c.search_text || (tid ? `Шина #${tid}` : 'Кандидат')
-        if (!cands.some((existing) => existing.label === label)) {
-          cands.push({ tireId: tid, label })
-        }
-      }
+    for (const c of (item.candidates ?? []) as CandidateTire[]) {
+      const tid = c.tire_id ?? c.id ?? null
+      const label = c.sku || c.search_text || (tid ? `Шина #${tid}` : 'Кандидат')
+      if (!cands.some((e) => e.label === label)) cands.push({ tireId: tid, label })
     }
 
     const matchedLabel =
       item.matched_tire?.sku ||
       cands[0]?.label ||
-      (item.matched_tire_id ? `Шина ID #${item.matched_tire_id}` : 'Не сопоставлено')
-
+      (item.matched_tire_id ? `Шина #${item.matched_tire_id}` : 'Не сопоставлено')
     const matchedId = item.matched_tire_id ?? cands[0]?.tireId ?? null
 
-    if (matchedLabel && !cands.some((c) => c.label === matchedLabel)) {
+    // Текущее сопоставление всегда должно быть первым вариантом в списке
+    if (!cands.some((c) => c.label === matchedLabel)) {
       cands.unshift({ tireId: matchedId, label: matchedLabel })
     }
+
+    // Бэкенд присылает уверенность 0..1; на всякий случай поддерживаем и 0..100
+    const raw = item.confidence_score ?? 0
+    const confidence = raw > 1 ? raw / 100 : raw
 
     return {
       id: item.id,
@@ -158,371 +158,260 @@ function mapBackendItemsToRows(items: RawOfferItemSchema[]): MatchingRow[] {
       initialTireId: matchedId,
       systemMatchCandidate: matchedLabel,
       initialCandidateName: matchedLabel,
-      candidates: cands.length > 0 ? cands : [{ tireId: matchedId, label: matchedLabel }],
-      confidenceScore: scorePercent,
+      candidates: cands,
+      confidence,
       matchStatus: item.match_status,
     }
   })
 }
 
-// Загрузка реальных данных сессии с бэкенда
+// ── Загрузка позиций сессии ───────────────────────────────────────────────────
 async function loadSessionMatches() {
   if (!props.sessionId) {
-    rows.value = JSON.parse(JSON.stringify(defaultMockRows))
+    rows.value = structuredClone(defaultMockRows)
     return
   }
-
   isLoading.value = true
   errorMessage.value = null
   try {
     const detail = await procurementApi.getSessionDetails(props.sessionId)
-    if (detail.raw_offer_items && detail.raw_offer_items.length > 0) {
-      rows.value = mapBackendItemsToRows(detail.raw_offer_items)
-    } else {
-      rows.value = []
-    }
+    rows.value = mapBackendItemsToRows(detail.raw_offer_items ?? [])
   } catch (err: any) {
-    errorMessage.value =
-      err?.response?.data?.detail || 'Не удалось загрузить позиции сессии с сервера'
+    errorMessage.value = err?.response?.data?.detail || 'Не удалось загрузить позиции сессии'
   } finally {
     isLoading.value = false
   }
 }
 
 onMounted(() => {
-  if (props.sessionId) {
-    loadSessionMatches()
-  }
+  if (props.sessionId) loadSessionMatches()
 })
 
-watch(
-  () => props.sessionId,
-  () => {
-    loadSessionMatches()
-  },
-)
+// При выборе другой сессии — перезагружаем таблицу и сбрасываем фильтр
+watch(() => props.sessionId, () => {
+  activeFilter.value = 'all'
+  loadSessionMatches()
+})
 
-// Обработка выбора кандидата в выпадающем списке
+// ── Ручной выбор кандидата (Active Learning) ──────────────────────────────────
 function onCandidateSelect(row: MatchingRow, newLabel: string) {
   row.systemMatchCandidate = newLabel
   const found = row.candidates.find((c) => c.label === newLabel)
-  if (found) {
-    row.selectedTireId = found.tireId
-  }
+  if (found) row.selectedTireId = found.tireId
 }
 
-// Определение уровня уверенности (Traffic Light)
-const getScoreStatus = (score: number) => {
-  if (score > 85) return 'high'
-  if (score >= 60) return 'medium'
-  return 'low'
+// Строки, в которых пользователь изменил выбор модели
+const changedItems = computed(() =>
+  rows.value.filter((r) => r.selectedTireId !== r.initialTireId || r.systemMatchCandidate !== r.initialCandidateName),
+)
+
+// Показать зелёное уведомление на 3 секунды
+function flashSuccess(text: string) {
+  successText.value = text
+  setTimeout(() => (successText.value = null), 3000)
 }
 
-const getRowClass = (score: number) => {
-  const status = getScoreStatus(score)
-  switch (status) {
-    case 'high':
-      return 'bg-emerald-50/60 hover:bg-emerald-100/60'
-    case 'medium':
-      return 'bg-amber-50/60 hover:bg-amber-100/60'
-    case 'low':
-      return 'bg-rose-50/60 hover:bg-rose-100/60'
-  }
-}
-
-const getBadgeClass = (score: number) => {
-  const status = getScoreStatus(score)
-  switch (status) {
-    case 'high':
-      return 'bg-emerald-100 text-emerald-800 border-emerald-200'
-    case 'medium':
-      return 'bg-amber-100 text-amber-800 border-amber-200'
-    case 'low':
-      return 'bg-rose-100 text-rose-800 border-rose-200'
-  }
-}
-
-const getStatusIcon = (score: number) => {
-  const status = getScoreStatus(score)
-  switch (status) {
-    case 'high':
-      return CheckCircle
-    case 'medium':
-      return AlertTriangle
-    case 'low':
-      return XCircle
-  }
-}
-
-const getIconColorClass = (score: number) => {
-  const status = getScoreStatus(score)
-  switch (status) {
-    case 'high':
-      return 'text-emerald-500'
-    case 'medium':
-      return 'text-amber-500'
-    case 'low':
-      return 'text-rose-500'
-  }
-}
-
-// Список измененных пользователем позиций
-const changedItems = computed(() => {
-  return rows.value.filter(
-    (r) =>
-      r.systemMatchCandidate !== r.initialCandidateName ||
-      r.selectedTireId !== r.initialTireId,
-  )
-})
-
-// Отправка ручных исправлений на бэкенд (PATCH /api/v1/procurement/items/{item_id})
-const submitCorrections = async () => {
+// ── Отправка исправлений (PATCH /api/v1/procurement/items/{item_id}) ──────────
+async function submitCorrections() {
   if (changedItems.value.length === 0) return
-
   isSubmitting.value = true
   errorMessage.value = null
-
   try {
     if (props.sessionId) {
       for (const item of changedItems.value) {
-        if (item.selectedTireId) {
-          await procurementApi.manualRematchItem(item.id, item.selectedTireId)
-        }
+        if (item.selectedTireId) await procurementApi.manualRematchItem(item.id, item.selectedTireId)
       }
       await loadSessionMatches()
       emit('updated')
     } else {
-      // Демо-режим
+      // Демо-режим: имитируем ответ сервера
       await new Promise((resolve) => setTimeout(resolve, 600))
       changedItems.value.forEach((item) => {
         item.initialCandidateName = item.systemMatchCandidate
         item.initialTireId = item.selectedTireId
-        item.confidenceScore = 100
+        item.confidence = 1   // ручная привязка = 100% уверенности
         item.matchStatus = 'MANUAL'
       })
     }
-
-    alertMessage.value = 'Исправления сохранены в FeedbackAuditLog'
-    showSuccessAlert.value = true
-    setTimeout(() => {
-      showSuccessAlert.value = false
-    }, 3000)
+    flashSuccess('Исправления сохранены — модель учтёт их при дообучении')
   } catch (err: any) {
-    errorMessage.value =
-      err?.response?.data?.detail || 'Ошибка при сохранении ручной привязки на сервере'
+    errorMessage.value = err?.response?.data?.detail || 'Ошибка при сохранении исправлений'
   } finally {
     isSubmitting.value = false
   }
 }
 
-// Утверждение всей сессии (POST /api/v1/procurement/{session_id}/approve)
-const handleApproveSession = async () => {
+// ── Утверждение сессии (POST /api/v1/procurement/{session_id}/approve) ────────
+async function handleApproveSession() {
   if (!props.sessionId) return
   isApproving.value = true
   errorMessage.value = null
   try {
     await procurementApi.approveSession(props.sessionId, true)
-    alertMessage.value = 'Сессия успешно утверждена (APPROVED)!'
-    showSuccessAlert.value = true
+    flashSuccess('Сессия утверждена — можно переходить к матрице цен')
     emit('approved')
-    setTimeout(() => {
-      showSuccessAlert.value = false
-    }, 3000)
   } catch (err: any) {
-    errorMessage.value =
-      err?.response?.data?.detail || 'Не удалось утвердить сессию на сервере'
+    errorMessage.value = err?.response?.data?.detail || 'Не удалось утвердить сессию'
   } finally {
     isApproving.value = false
   }
 }
 
-// Выгрузка сопоставленной таблицы с бэкенда (/matched-table)
-const handleDownloadMatched = async (format: 'csv' | 'xlsx') => {
+// ── Скачать таблицу сопоставления (XLSX) ──────────────────────────────────────
+async function handleDownloadMatched() {
   if (!props.sessionId) {
     ExportService.exportToExcel(rows.value, 'matched_table')
     return
   }
   try {
-    const blob = await procurementApi.downloadMatchedTable(props.sessionId, format)
-    ExportService.downloadBlob(blob, `matched_session_${props.sessionId}.${format}`)
-  } catch (err: any) {
-    errorMessage.value = 'Ошибка при скачивании таблицы сопоставления'
+    const blob = await procurementApi.downloadMatchedTable(props.sessionId, 'xlsx')
+    ExportService.downloadBlob(blob, `matched_session_${props.sessionId}.xlsx`)
+  } catch {
+    errorMessage.value = 'Ошибка при скачивании таблицы'
   }
+}
+
+// Подписи статусов сопоставления на русском
+const matchStatusLabels: Record<string, string> = {
+  AUTO: 'Авто',
+  NEEDS_REVIEW: 'Требует проверки',
+  MANUAL: 'Вручную',
+  UNMATCHED: 'Не найдено',
 }
 </script>
 
 <template>
-  <div class="w-full bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col">
-    <!-- Заголовок таблицы -->
-    <div class="p-6 border-b border-gray-200 bg-gray-50/50">
-      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-        <div>
-          <h2 class="text-lg font-semibold text-gray-900">
-            Результаты сопоставления ML (Traffic Light)
-            <span v-if="sessionId" class="text-sm font-mono text-indigo-600 ml-2">
-              #{{ sessionId }}
-            </span>
-          </h2>
-          <p class="mt-1 text-sm text-gray-500">
-            Оценка уверенности алгоритма:
-            <span class="text-emerald-600 font-medium">&gt;85% (Высокая)</span>,
-            <span class="text-amber-600 font-medium">60-85% (Средняя)</span>,
-            <span class="text-rose-600 font-medium">&lt;60% (Низкая)</span>
-          </p>
-        </div>
-
-        <div class="flex flex-wrap items-center gap-2.5">
-          <!-- Оповещение об успешной отправке -->
-          <span
-            v-if="showSuccessAlert"
-            class="text-xs font-medium text-emerald-600 flex items-center gap-1 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200"
-          >
-            <CheckCircle class="w-4 h-4" /> {{ alertMessage }}
-          </span>
-
-          <!-- Кнопка обновления с сервера -->
-          <button
-            v-if="sessionId"
-            type="button"
-            @click="loadSessionMatches"
-            :disabled="isLoading"
-            class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
-            title="Обновить данные с сервера"
-          >
-            <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoading }" />
-            Обновить
-          </button>
-
-          <!-- Скачать XLSX / CSV с бэкенда -->
-          <button
-            v-if="sessionId"
-            type="button"
-            @click="handleDownloadMatched('xlsx')"
-            class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors cursor-pointer"
-          >
-            <Download class="w-3.5 h-3.5" />
-            XLSX для CRM
-          </button>
-
-          <!-- Кнопка отправки исправлений Active Learning -->
-          <button
-            type="button"
-            @click="submitCorrections"
-            :disabled="changedItems.length === 0 || isSubmitting"
-            class="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-indigo-700 cursor-pointer"
-          >
-            <Send class="w-3.5 h-3.5" />
-            Отправить исправления (Active Learning)
-            {{ changedItems.length > 0 ? `(${changedItems.length})` : '' }}
-          </button>
-
-          <!-- Кнопка утверждения сессии на бэкенде -->
-          <button
-            v-if="sessionId && sessionStatus !== 'APPROVED'"
-            type="button"
-            @click="handleApproveSession"
-            :disabled="isApproving"
-            class="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-all disabled:opacity-50 cursor-pointer"
-          >
-            <ShieldCheck class="w-4 h-4" />
-            {{ isApproving ? 'Утверждение...' : 'Утвердить сессию' }}
-          </button>
-        </div>
+  <div class="bg-white rounded-2xl ring-1 ring-zinc-200/70 shadow-soft overflow-hidden">
+    <!-- ── Шапка: заголовок и действия ─────────────────────────────────────── -->
+    <div class="flex flex-col gap-4 p-6 lg:flex-row lg:items-start lg:justify-between">
+      <div>
+        <h2 class="text-base font-semibold text-zinc-900">
+          Результаты сопоставления
+          <span v-if="sessionId" class="ml-1 font-mono text-sm text-zinc-400">#{{ sessionId }}</span>
+          <span v-else class="ml-2 px-2 py-0.5 rounded-full bg-zinc-100 text-xs font-medium text-zinc-500">демо</span>
+        </h2>
+        <p class="mt-0.5 text-sm text-zinc-500">
+          Для жёлтых и красных строк выберите правильную шину из списка — это дообучит модель.
+        </p>
       </div>
 
-      <!-- Сообщение об ошибке -->
-      <div
-        v-if="errorMessage"
-        class="mt-3 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs"
-      >
-        {{ errorMessage }}
+      <div class="flex flex-wrap items-center gap-2">
+        <BaseButton v-if="sessionId" variant="ghost" size="sm" :icon="RefreshCw" :loading="isLoading" @click="loadSessionMatches">
+          Обновить
+        </BaseButton>
+        <BaseButton variant="secondary" size="sm" :icon="Download" @click="handleDownloadMatched">XLSX</BaseButton>
+        <BaseButton
+          variant="secondary"
+          size="sm"
+          :icon="Send"
+          :loading="isSubmitting"
+          :disabled="changedItems.length === 0"
+          @click="submitCorrections"
+        >
+          Сохранить исправления
+          <span
+            v-if="changedItems.length"
+            class="ml-0.5 px-1.5 rounded-md bg-brand-400 text-zinc-950 font-mono"
+          >{{ changedItems.length }}</span>
+        </BaseButton>
+        <BaseButton
+          v-if="sessionId && sessionStatus !== 'APPROVED'"
+          size="sm"
+          :icon="ShieldCheck"
+          :loading="isApproving"
+          @click="handleApproveSession"
+        >
+          Утвердить сессию
+        </BaseButton>
       </div>
     </div>
 
-    <!-- Таблица -->
-    <div class="overflow-x-auto">
-      <table class="w-full text-left border-collapse">
+    <!-- ── Уведомления ─────────────────────────────────────────────────────── -->
+    <div v-if="successText || errorMessage" class="px-6 pb-4">
+      <p
+        v-if="successText"
+        class="flex items-center gap-2 p-3 rounded-xl bg-lime-50 text-sm text-lime-800 ring-1 ring-lime-200"
+      >
+        <CheckCircle2 class="w-4 h-4" /> {{ successText }}
+      </p>
+      <p
+        v-if="errorMessage"
+        class="flex items-center gap-2 p-3 rounded-xl bg-rose-50 text-sm text-rose-700 ring-1 ring-rose-200"
+      >
+        <AlertCircle class="w-4 h-4" /> {{ errorMessage }}
+      </p>
+    </div>
+
+    <!-- ── Фильтры-«чипы» по светофору ─────────────────────────────────────── -->
+    <div class="flex flex-wrap gap-2 px-6 pb-4 border-b border-zinc-100">
+      <button
+        v-for="f in filters"
+        :key="f.key"
+        type="button"
+        class="inline-flex items-center gap-2 h-8 px-3 rounded-full text-sm font-medium transition-colors cursor-pointer"
+        :class="activeFilter === f.key ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'"
+        @click="activeFilter = f.key"
+      >
+        <span class="w-2 h-2 rounded-full" :class="f.dot" />
+        {{ f.label }}
+        <span class="font-mono text-xs opacity-70">{{ f.count }}</span>
+      </button>
+    </div>
+
+    <!-- ── Пустое состояние ────────────────────────────────────────────────── -->
+    <EmptyState
+      v-if="!isLoading && visibleRows.length === 0"
+      :icon="PackageOpen"
+      :title="rows.length === 0 ? 'В сессии пока нет позиций' : 'Нет строк в этой категории'"
+      :hint="rows.length === 0 ? 'Дождитесь окончания ML-обработки или загрузите прайс заново.' : 'Выберите другой фильтр выше.'"
+    />
+
+    <!-- ── Таблица ─────────────────────────────────────────────────────────── -->
+    <div v-else class="overflow-x-auto">
+      <table class="w-full text-sm">
         <thead>
-          <tr class="bg-gray-50 border-b border-gray-200 text-xs font-semibold uppercase text-gray-600">
-            <th class="py-3 px-6 w-12 text-center">Статус</th>
-            <th class="py-3 px-6">Товар поставщика (Оригинал)</th>
-            <th class="py-3 px-6 text-right w-28">Цена</th>
-            <th class="py-3 px-6 w-2/5">Кандидат в нашей системе (Эталон)</th>
-            <th class="py-3 px-6 text-center w-32">Уверенность</th>
+          <tr class="text-left text-xs font-medium text-zinc-500 bg-zinc-50/60">
+            <th class="px-6 py-3 font-medium">Позиция поставщика</th>
+            <th class="px-6 py-3 font-medium text-right">Цена</th>
+            <th class="px-6 py-3 font-medium w-2/5">Эталонная шина в каталоге</th>
+            <th class="px-6 py-3 font-medium text-center">Уверенность</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-200">
-          <tr
-            v-for="item in rows"
-            :key="item.id"
-            :class="[getRowClass(item.confidenceScore), 'transition-colors duration-150']"
-          >
-            <!-- Иконка статуса -->
-            <td class="py-4 px-6 text-center">
-              <component
-                :is="getStatusIcon(item.confidenceScore)"
-                class="w-5 h-5 mx-auto"
-                :class="getIconColorClass(item.confidenceScore)"
-              />
-            </td>
-
-            <!-- Оригинальный товар -->
-            <td class="py-4 px-6">
-              <div class="text-sm font-medium text-gray-900">
-                {{ item.originalSupplierItem }}
-              </div>
-              <div class="text-xs text-gray-500 mt-0.5">
-                Остаток: {{ item.quantity }} шт. · Статус: {{ item.matchStatus }}
-              </div>
+        <tbody class="divide-y divide-zinc-100" :class="{ 'opacity-50': isLoading }">
+          <tr v-for="item in visibleRows" :key="item.id" class="hover:bg-zinc-50/70 transition-colors">
+            <!-- Исходная позиция -->
+            <td class="px-6 py-4">
+              <p class="font-medium text-zinc-900">{{ item.originalSupplierItem }}</p>
+              <p class="mt-0.5 text-xs text-zinc-500">
+                <span class="font-mono">{{ item.quantity }}</span> шт. ·
+                {{ matchStatusLabels[item.matchStatus] ?? item.matchStatus }}
+              </p>
             </td>
 
             <!-- Цена -->
-            <td class="py-4 px-6 text-right font-mono text-sm text-gray-800 whitespace-nowrap">
+            <td class="px-6 py-4 text-right font-mono tabular-nums whitespace-nowrap text-zinc-800">
               {{ item.price.toLocaleString('ru-RU') }} ₽
             </td>
 
-            <!-- Кандидат в системе (Active Learning UI) -->
-            <td class="py-4 px-6">
-              <!-- Если уверенность высокая (>85), показываем текст -->
-              <div v-if="item.confidenceScore > 85" class="text-sm text-gray-800 font-medium">
+            <!-- Эталон: уверенные — просто текст, остальные — выпадающий список -->
+            <td class="px-6 py-4">
+              <p v-if="getConfidenceLevel(item.confidence) === 'high'" class="font-medium text-zinc-800">
                 {{ item.systemMatchCandidate }}
-              </div>
-
-              <!-- Иначе показываем выпадающий список (Select) для ручной корректировки -->
-              <div v-else class="flex flex-col gap-1">
-                <select
-                  :value="item.systemMatchCandidate"
-                  @change="onCandidateSelect(item, ($event.target as HTMLSelectElement).value)"
-                  class="block w-full rounded-lg border border-gray-300 px-3 py-1.5 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm text-gray-800 bg-white"
-                  :class="{
-                    'border-indigo-400 bg-indigo-50':
-                      item.systemMatchCandidate !== item.initialCandidateName,
-                  }"
-                >
-                  <option
-                    v-for="candidate in item.candidates"
-                    :key="candidate.label"
-                    :value="candidate.label"
-                  >
-                    {{ candidate.label }}
-                  </option>
-                </select>
-                <div class="flex items-center gap-1 text-xs text-gray-500 mt-0.5">
-                  <Info class="w-3.5 h-3.5 text-amber-500" v-if="item.confidenceScore >= 60" />
-                  <Info class="w-3.5 h-3.5 text-rose-500" v-else />
-                  <span>Выберите эталонную шину для дообучения (Active Learning)</span>
-                </div>
-              </div>
+              </p>
+              <select
+                v-else
+                class="field h-9"
+                :class="{ '!ring-2 !ring-brand-400 bg-brand-50': item.systemMatchCandidate !== item.initialCandidateName }"
+                :value="item.systemMatchCandidate"
+                @change="onCandidateSelect(item, ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="c in item.candidates" :key="c.label" :value="c.label">{{ c.label }}</option>
+              </select>
             </td>
 
-            <!-- Оценка уверенности (Score) -->
-            <td class="py-4 px-6 text-center">
-              <span
-                class="inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-bold border shadow-sm"
-                :class="getBadgeClass(item.confidenceScore)"
-              >
-                {{ item.confidenceScore }}%
-              </span>
+            <!-- Светофор -->
+            <td class="px-6 py-4 text-center">
+              <ConfidenceBadge :score="item.confidence" />
             </td>
           </tr>
         </tbody>

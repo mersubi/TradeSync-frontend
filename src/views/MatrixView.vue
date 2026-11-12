@@ -1,20 +1,24 @@
-<!-- src/views/MatrixView.vue -->
+<!-- src/views/MatrixView.vue
+     Шаг 3–4 процесса: сводная матрица цен поставщиков и расчёт сплита.
+     Строки — эталонные шины, колонки — поставщики. Лучшая цена в строке
+     подсвечивается. Ниже — SplitOptimizer (MILP) и экспорт в 1С.
+-->
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { procurementApi } from '@/api/procurement'
-import type { ProcurementSessionResponse, SupplierResponse } from '@/api/procurement'
+import type { ProcurementSessionResponse } from '@/api/procurement'
 import SplitOptimizer from '@/components/SplitOptimizer.vue'
-import {
-  Table as TableIcon,
-  Search,
-  Filter,
-  TrendingDown,
-  Building2,
-  Layers,
-  RefreshCw,
-} from '@lucide/vue'
+import BaseCard from '@/components/ui/BaseCard.vue'
+import BaseButton from '@/components/ui/BaseButton.vue'
+import ProcessStepper from '@/components/ui/ProcessStepper.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import { Search, SearchX, TrendingDown, RefreshCw } from '@lucide/vue'
 
-// ── Типизация данных матрицы цен ──────────────────────────────────────────────
+const route = useRoute()
+
+// ── Тип строки матрицы ────────────────────────────────────────────────────────
+// supplierPrices — словарь «название поставщика → цена» (null = нет предложения)
 export interface ProductMatrixItem {
   id: string
   name: string
@@ -23,117 +27,78 @@ export interface ProductMatrixItem {
   supplierPrices: Record<string, number | null>
 }
 
-// ── Список сессий и выбранная сессия с бэкенда ───────────────────────────────
-const sessions = ref<ProcurementSessionResponse[]>([])
+// ── Состояние ─────────────────────────────────────────────────────────────────
+const sessions          = ref<ProcurementSessionResponse[]>([])
 const selectedSessionId = ref<number | null>(null)
-const isLoading = ref(false)
+const isLoading         = ref(false)
+const supplierNames     = ref(new Map<number, string>())  // id поставщика → название
 
-// ── Дефолтные поставщики и товары (если сессия еще не выбрана) ────────────────
-const defaultSuppliers = [
-  'Поставщик А (ШинИнвест)',
-  'Поставщик Б (АвтоШинаОпт)',
-]
-
+// ── Демо-данные (если сессия не выбрана или сервер недоступен) ────────────────
+const defaultSuppliers = ['ШинИнвест', 'АвтоШинаОпт']
 const defaultProducts: ProductMatrixItem[] = [
-  {
-    id: 'TIRE-001',
-    name: 'Michelin X-Ice North 4 205/55 R16 94T XL',
-    sku: 'MICHELIN-XIN4-205-55-R16',
-    category: 'Зимние шины',
-    supplierPrices: {
-      'Поставщик А (ШинИнвест)': 8500,
-      'Поставщик Б (АвтоШинаОпт)': 8900,
-    },
-  },
-  {
-    id: 'TIRE-002',
-    name: 'Nokian Tyres Hakkapeliitta 10p 185/65 R15',
-    sku: 'NOKIAN-HKPL10P-185-65-R15',
-    category: 'Зимние шины',
-    supplierPrices: {
-      'Поставщик А (ШинИнвест)': 7350,
-      'Поставщик Б (АвтоШинаОпт)': 7000,
-    },
-  },
-  {
-    id: 'TIRE-003',
-    name: 'Pirelli Ice Zero 2 225/45 R17 94T XL',
-    sku: 'PIRELLI-IZ2-225-45-R17',
-    category: 'Зимние шины',
-    supplierPrices: {
-      'Поставщик А (ШинИнвест)': 12000,
-      'Поставщик Б (АвтоШинаОпт)': 12450,
-    },
-  },
-  {
-    id: 'TIRE-004',
-    name: 'Bridgestone Turanza T005 205/55 R16 91V',
-    sku: 'BRIDGESTONE-T005-205-55-R16',
-    category: 'Летние шины',
-    supplierPrices: {
-      'Поставщик А (ШинИнвест)': 9400,
-      'Поставщик Б (АвтоШинаОпт)': 9000,
-    },
-  },
+  { id: 'T1', name: 'Michelin X-Ice North 4 205/55 R16 94T XL', sku: 'MICHELIN-XIN4-205-55-R16', category: 'Зимние',
+    supplierPrices: { ШинИнвест: 8500, АвтоШинаОпт: 8900 } },
+  { id: 'T2', name: 'Nokian Hakkapeliitta 10p 185/65 R15', sku: 'NOKIAN-HKPL10P-185-65-R15', category: 'Зимние',
+    supplierPrices: { ШинИнвест: 7350, АвтоШинаОпт: 7000 } },
+  { id: 'T3', name: 'Pirelli Ice Zero 2 225/45 R17 94T XL', sku: 'PIRELLI-IZ2-225-45-R17', category: 'Зимние',
+    supplierPrices: { ШинИнвест: 12000, АвтоШинаОпт: 12450 } },
+  { id: 'T4', name: 'Bridgestone Turanza T005 205/55 R16 91V', sku: 'BRIDGESTONE-T005-205-55-R16', category: 'Летние',
+    supplierPrices: { ШинИнвест: 9400, АвтоШинаОпт: 9000 } },
 ]
 
 const suppliers = ref<string[]>([...defaultSuppliers])
-const products = ref<ProductMatrixItem[]>([...defaultProducts])
-const backendSuppliersMap = ref<Map<number, string>>(new Map())
+const products  = ref<ProductMatrixItem[]>([...defaultProducts])
 
-// Построение сводной матрицы цен по данным выбранной сессии с бэкенда
+function useDemoData() {
+  suppliers.value = [...defaultSuppliers]
+  products.value  = [...defaultProducts]
+}
+
+// ── Построение матрицы по позициям сессии ─────────────────────────────────────
+// Группируем предложения по эталонной шине; если у одного поставщика
+// несколько цен на одну шину — оставляем минимальную.
 async function loadMatrixForSession(sessionId: number | null) {
-  if (!sessionId) {
-    suppliers.value = [...defaultSuppliers]
-    products.value = [...defaultProducts]
-    return
-  }
+  if (!sessionId) return useDemoData()
 
   isLoading.value = true
   try {
     const detail = await procurementApi.getSessionDetails(sessionId)
-    const offers = detail.raw_offer_items || []
-    if (offers.length === 0) {
-      suppliers.value = [...defaultSuppliers]
-      products.value = [...defaultProducts]
-      return
-    }
+    const offers = detail.raw_offer_items ?? []
+    if (offers.length === 0) return useDemoData()
 
-    const supSet = new Set<string>()
+    const supSet     = new Set<string>()
     const productMap = new Map<string, ProductMatrixItem>()
 
     for (const offer of offers) {
       const supName =
-        (offer.supplier_id && backendSuppliersMap.value.get(offer.supplier_id)) ||
-        (offer.supplier_id ? `Поставщик #${offer.supplier_id}` : 'Прайс-лист сессии')
+        (offer.supplier_id && supplierNames.value.get(offer.supplier_id)) ||
+        (offer.supplier_id ? `Поставщик #${offer.supplier_id}` : 'Прайс сессии')
       supSet.add(supName)
 
       const key = offer.matched_tire?.sku || offer.raw_name
-      const existing = productMap.get(key) || {
+      const row = productMap.get(key) ?? {
         id: String(offer.matched_tire_id || offer.id),
         name: offer.matched_tire?.sku || offer.raw_name,
         sku: offer.supplier_article || `TIRE-${offer.matched_tire_id || offer.id}`,
-        category: offer.matched_tire ? `R${offer.matched_tire.diameter_inch}` : 'Каталог шин',
+        category: offer.matched_tire ? `R${offer.matched_tire.diameter_inch}` : 'Без категории',
         supplierPrices: {},
       }
 
-      const prevPrice = existing.supplierPrices[supName]
-      if (prevPrice === undefined || prevPrice === null || offer.price < prevPrice) {
-        existing.supplierPrices[supName] = offer.price
-      }
-      productMap.set(key, existing)
+      const prev = row.supplierPrices[supName]
+      if (prev == null || offer.price < prev) row.supplierPrices[supName] = offer.price
+      productMap.set(key, row)
     }
 
     suppliers.value = Array.from(supSet)
-    products.value = Array.from(productMap.values())
+    products.value  = Array.from(productMap.values())
   } catch {
-    suppliers.value = [...defaultSuppliers]
-    products.value = [...defaultProducts]
+    useDemoData()
   } finally {
     isLoading.value = false
   }
 }
 
+// ── Инициализация ─────────────────────────────────────────────────────────────
 onMounted(async () => {
   try {
     const [sessList, supList] = await Promise.all([
@@ -141,249 +106,146 @@ onMounted(async () => {
       procurementApi.listSuppliers(),
     ])
     sessions.value = sessList
-    const map = new Map<number, string>()
-    supList.forEach((s: SupplierResponse) => map.set(s.id, s.name))
-    backendSuppliersMap.value = map
+    supplierNames.value = new Map(supList.map((s) => [s.id, s.name]))
 
-    if (sessList.length > 0) {
-      selectedSessionId.value = sessList[0].id
-      await loadMatrixForSession(sessList[0].id)
-    }
+    // Сессия из ссылки (?session_id=5) или первая в списке
+    const fromQuery = Number(route.query.session_id)
+    selectedSessionId.value = sessList.find((s) => s.id === fromQuery)?.id ?? sessList[0]?.id ?? null
+    await loadMatrixForSession(selectedSessionId.value)
   } catch {
-    // Используем демо-данные, если сервер недоступен
+    // Сервер недоступен — остаются демо-данные
   }
 })
 
-// ── Фильтры и поиск ───────────────────────────────────────────────────────────
-const searchQuery = ref('')
+// ── Поиск и фильтры ───────────────────────────────────────────────────────────
+const searchQuery      = ref('')
 const selectedCategory = ref('')
-const selectedSupplier = ref('')
 
-const categories = computed(() => {
-  const set = new Set(products.value.map((p) => p.category))
-  return Array.from(set)
-})
+const categories = computed(() => Array.from(new Set(products.value.map((p) => p.category))))
 
-function getLowestPrice(supplierPrices: Record<string, number | null>): number | null {
-  const validPrices = Object.values(supplierPrices).filter(
-    (price): price is number => price !== null && price > 0,
-  )
-  if (validPrices.length === 0) return null
-  return Math.min(...validPrices)
-}
-
-function formatCurrency(value: number | null): string {
-  if (value === null || value === undefined) return '—'
-  return new Intl.NumberFormat('ru-RU', {
-    style: 'currency',
-    currency: 'RUB',
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
+// Отфильтрованные строки: computed пересчитывается при вводе в поиск
 const filteredProducts = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
   return products.value.filter((item) => {
-    const matchesSearch =
-      searchQuery.value.trim() === '' ||
-      item.name.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-      item.sku.toLowerCase().includes(searchQuery.value.toLowerCase())
-
-    const matchesCategory =
-      selectedCategory.value === '' || item.category === selectedCategory.value
-
-    const matchesSupplier =
-      selectedSupplier.value === '' ||
-      (item.supplierPrices[selectedSupplier.value] !== null &&
-        item.supplierPrices[selectedSupplier.value] !== undefined)
-
-    return matchesSearch && matchesCategory && matchesSupplier
+    const matchesSearch   = !q || item.name.toLowerCase().includes(q) || item.sku.toLowerCase().includes(q)
+    const matchesCategory = !selectedCategory.value || item.category === selectedCategory.value
+    return matchesSearch && matchesCategory
   })
 })
+
+// Минимальная цена в строке — чтобы подсветить лучшее предложение
+function getLowestPrice(prices: Record<string, number | null>): number | null {
+  const valid = Object.values(prices).filter((p): p is number => p != null && p > 0)
+  return valid.length ? Math.min(...valid) : null
+}
+
+// Формат цены: 12000 → «12 000 ₽»
+function formatCurrency(value: number | null | undefined): string {
+  if (value == null) return '—'
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(value)
+}
 </script>
 
 <template>
-  <div class="max-w-7xl mx-auto space-y-10">
-    <!-- Заголовок страницы и выбор сессии -->
-    <div class="border-b border-white/8 pb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-purple-500/15 flex items-center justify-center">
-          <TableIcon class="w-5 h-5 text-purple-400" :stroke-width="1.75" />
-        </div>
+  <div class="space-y-8">
+    <!-- ── Заголовок ───────────────────────────────────────────────────────── -->
+    <div class="space-y-5">
+      <ProcessStepper :current="3" />
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 class="text-2xl font-bold text-white tracking-tight">Матрица цен и Сплит-Оптимизатор</h1>
-          <p class="text-slate-400 text-sm mt-0.5">
-            Сводная таблица цен поставщиков, расчет MILP-распределения и экспорт в 1С CommerceML
+          <h1 class="text-3xl font-semibold tracking-tight text-zinc-900">Матрица цен и сплит</h1>
+          <p class="mt-1 text-sm text-zinc-500">
+            Сравните предложения поставщиков и рассчитайте самое выгодное распределение заказа.
           </p>
         </div>
-      </div>
 
-      <!-- Выбор закупочной сессии -->
-      <div class="flex items-center gap-2.5">
-        <select
-          v-model="selectedSessionId"
-          @change="loadMatrixForSession(selectedSessionId)"
-          class="bg-slate-800 border border-white/10 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
-        >
-          <option :value="null">Демо-данные матрицы</option>
-          <option v-for="sess in sessions" :key="sess.id" :value="sess.id">
-            Сессия #{{ sess.id }}: {{ sess.title }} ({{ sess.status }})
-          </option>
+        <!-- Выбор сессии -->
+        <div class="flex items-center gap-2">
+          <select
+            v-model="selectedSessionId"
+            class="field w-72"
+            @change="loadMatrixForSession(selectedSessionId)"
+          >
+            <option :value="null">Демо-данные</option>
+            <option v-for="s in sessions" :key="s.id" :value="s.id">#{{ s.id }} · {{ s.title }}</option>
+          </select>
+          <BaseButton
+            v-if="selectedSessionId"
+            variant="secondary"
+            :icon="RefreshCw"
+            :loading="isLoading"
+            title="Обновить матрицу"
+            @click="loadMatrixForSession(selectedSessionId)"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Матрица цен ─────────────────────────────────────────────────────── -->
+    <BaseCard
+      title="Сводная матрица"
+      :subtitle="`${filteredProducts.length} позиций · ${suppliers.length} поставщиков`"
+      :padded="false"
+    >
+      <template #actions>
+        <!-- Поиск -->
+        <div class="relative">
+          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
+          <input v-model="searchQuery" type="text" placeholder="Поиск по названию или SKU" class="field w-64 pl-9" />
+        </div>
+        <select v-model="selectedCategory" class="field w-40">
+          <option value="">Все категории</option>
+          <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
         </select>
+      </template>
 
-        <button
-          v-if="selectedSessionId"
-          type="button"
-          @click="loadMatrixForSession(selectedSessionId)"
-          :disabled="isLoading"
-          class="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 cursor-pointer"
-          title="Обновить матрицу"
-        >
-          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': isLoading }" />
-        </button>
-      </div>
-    </div>
+      <EmptyState
+        v-if="filteredProducts.length === 0"
+        :icon="SearchX"
+        title="Ничего не найдено"
+        hint="Попробуйте изменить запрос или сбросить фильтр категории."
+      />
 
-    <!-- Панель фильтров и поиска -->
-    <div class="bg-slate-900/60 border border-white/8 rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-4 shadow-lg">
-      <div class="relative w-full md:w-80">
-        <Search
-          class="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
-          :stroke-width="2"
-        />
-        <input
-          v-model="searchQuery"
-          type="text"
-          placeholder="Поиск по названию или SKU..."
-          class="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
-        />
-      </div>
-
-      <div class="flex flex-wrap sm:flex-nowrap items-center gap-3 w-full md:w-auto">
-        <div class="relative w-full sm:w-56">
-          <select
-            v-model="selectedCategory"
-            class="w-full appearance-none bg-slate-800 border border-white/10 rounded-xl px-4 py-2 pr-10 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 cursor-pointer"
-          >
-            <option value="">Все категории</option>
-            <option v-for="category in categories" :key="category" :value="category">
-              {{ category }}
-            </option>
-          </select>
-          <Layers class="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-        </div>
-
-        <div class="relative w-full sm:w-64">
-          <select
-            v-model="selectedSupplier"
-            class="w-full appearance-none bg-slate-800 border border-white/10 rounded-xl px-4 py-2 pr-10 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 cursor-pointer"
-          >
-            <option value="">Все поставщики</option>
-            <option v-for="supplier in suppliers" :key="supplier" :value="supplier">
-              {{ supplier }}
-            </option>
-          </select>
-          <Building2 class="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-        </div>
-      </div>
-    </div>
-
-    <!-- Сводная таблица матрицы цен -->
-    <div class="bg-slate-900/60 border border-white/8 rounded-2xl overflow-hidden shadow-xl">
-      <div class="overflow-x-auto">
-        <table class="w-full text-left border-collapse min-w-[800px]">
+      <div v-else class="overflow-x-auto">
+        <table class="w-full text-sm min-w-[720px]" :class="{ 'opacity-50': isLoading }">
           <thead>
-            <tr class="border-b border-white/8 bg-slate-900/90 text-xs font-semibold uppercase tracking-wider text-slate-400">
-              <th
-                scope="col"
-                class="py-4 px-6 sticky left-0 z-20 bg-slate-900 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-white/5 min-w-[280px]"
-              >
-                Товар / SKU
-              </th>
-              <th scope="col" class="py-4 px-6 min-w-[140px]">Категория</th>
-
-              <th
-                v-for="supplier in suppliers"
-                :key="supplier"
-                scope="col"
-                class="py-4 px-6 text-right min-w-[180px]"
-              >
-                <div class="flex items-center justify-end gap-1.5">
-                  <span class="truncate" :title="supplier">{{ supplier }}</span>
-                </div>
-              </th>
+            <tr class="text-left text-xs font-medium text-zinc-500 bg-zinc-50/60">
+              <!-- Первая колонка «прилипает» к левому краю при горизонтальной прокрутке -->
+              <th class="sticky left-0 z-10 px-6 py-3 font-medium bg-zinc-50 min-w-72">Шина</th>
+              <th class="px-6 py-3 font-medium">Категория</th>
+              <th v-for="sup in suppliers" :key="sup" class="px-6 py-3 font-medium text-right min-w-40">{{ sup }}</th>
             </tr>
           </thead>
-
-          <tbody class="divide-y divide-white/5 text-sm">
-            <tr
-              v-for="product in filteredProducts"
-              :key="product.id"
-              class="hover:bg-white/[0.02] transition-colors group"
-            >
-              <td
-                class="py-4 px-6 sticky left-0 z-10 bg-slate-900 group-hover:bg-slate-850 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-white/5"
-              >
-                <div class="min-w-0">
-                  <p class="font-medium text-white group-hover:text-purple-300 transition-colors">
-                    {{ product.name }}
-                  </p>
-                  <p class="text-xs font-mono text-slate-500 mt-0.5">
-                    {{ product.sku }}
-                  </p>
-                </div>
+          <tbody class="divide-y divide-zinc-100">
+            <tr v-for="product in filteredProducts" :key="product.id" class="group hover:bg-zinc-50/70">
+              <td class="sticky left-0 z-10 px-6 py-4 bg-white group-hover:bg-zinc-50">
+                <p class="font-medium text-zinc-900">{{ product.name }}</p>
+                <p class="mt-0.5 text-xs font-mono text-zinc-400">{{ product.sku }}</p>
               </td>
-
-              <td class="py-4 px-6 text-slate-400 whitespace-nowrap text-xs">
-                <span class="px-2.5 py-1 rounded-md bg-white/5 border border-white/5">
-                  {{ product.category }}
+              <td class="px-6 py-4">
+                <span class="px-2 py-0.5 rounded-md bg-zinc-100 text-xs text-zinc-600">{{ product.category }}</span>
+              </td>
+              <td v-for="sup in suppliers" :key="sup" class="px-6 py-4 text-right whitespace-nowrap">
+                <!-- Лучшая цена — лаймовый бейдж со стрелкой вниз -->
+                <span
+                  v-if="product.supplierPrices[sup] != null && product.supplierPrices[sup] === getLowestPrice(product.supplierPrices)"
+                  class="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-brand-100 font-mono font-semibold text-brand-800"
+                  title="Лучшая цена"
+                >
+                  <TrendingDown class="w-3.5 h-3.5" :stroke-width="2.5" />
+                  {{ formatCurrency(product.supplierPrices[sup]) }}
                 </span>
-              </td>
-
-              <td
-                v-for="supplier in suppliers"
-                :key="supplier"
-                class="py-4 px-6 text-right whitespace-nowrap"
-              >
-                <template v-if="product.supplierPrices[supplier] !== null && product.supplierPrices[supplier] !== undefined">
-                  <div class="flex items-center justify-end gap-1.5">
-                    <span
-                      v-if="product.supplierPrices[supplier] === getLowestPrice(product.supplierPrices)"
-                      class="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm"
-                      title="Лучшая цена"
-                    >
-                      <TrendingDown class="w-3 h-3" :stroke-width="2.5" />
-                      <span>{{ formatCurrency(product.supplierPrices[supplier]) }}</span>
-                    </span>
-
-                    <span
-                      v-else
-                      class="text-slate-300 font-mono text-xs"
-                    >
-                      {{ formatCurrency(product.supplierPrices[supplier]) }}
-                    </span>
-                  </div>
-                </template>
-
-                <span v-else class="text-slate-600 font-mono text-xs">
-                  —
+                <span v-else class="font-mono tabular-nums text-zinc-600">
+                  {{ formatCurrency(product.supplierPrices[sup]) }}
                 </span>
-              </td>
-            </tr>
-
-            <tr v-if="filteredProducts.length === 0">
-              <td :colspan="2 + suppliers.length" class="py-12 px-6 text-center text-slate-400">
-                <div class="flex flex-col items-center justify-center space-y-2">
-                  <Filter class="w-8 h-8 text-slate-600 mb-1" :stroke-width="1.5" />
-                  <p class="text-base font-semibold text-white">Товары не найдены</p>
-                </div>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
-    </div>
+    </BaseCard>
 
-    <!-- Компонент SplitOptimizer, подключенный к выбранной сессии -->
+    <!-- ── Оптимизатор сплита и экспорт ────────────────────────────────────── -->
     <SplitOptimizer :session-id="selectedSessionId" />
   </div>
 </template>

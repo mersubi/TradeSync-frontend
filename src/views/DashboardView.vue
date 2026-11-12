@@ -1,44 +1,55 @@
-<!-- src/views/DashboardView.vue -->
+<!-- src/views/DashboardView.vue
+     Обзорный экран: приветствие, ключевые метрики, шаги процесса закупки
+     и список последних закупочных сессий.
+-->
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/authStore'
 import { procurementApi } from '@/api/procurement'
 import type { ProcurementSessionResponse, SupplierResponse } from '@/api/procurement'
+import { sessionStatusMeta, formatShortDate } from '@/utils/sessionStatus'
+import BaseCard from '@/components/ui/BaseCard.vue'
+import BaseButton from '@/components/ui/BaseButton.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 import {
   UploadCloud,
-  CheckCircle,
-  Table,
+  ShieldCheck,
+  Table2,
   ArrowRight,
   Package,
   Clock,
   Building2,
+  CheckCircle2,
+  Inbox,
 } from '@lucide/vue'
 
 const auth   = useAuthStore()
 const router = useRouter()
 
-const sessions = ref<ProcurementSessionResponse[]>([])
+// ── Состояние ─────────────────────────────────────────────────────────────────
+const sessions  = ref<ProcurementSessionResponse[]>([])
 const suppliers = ref<SupplierResponse[]>([])
-const isLoading = ref(false)
+const isLoading = ref(true)
 
+// ── Загрузка данных при открытии страницы ─────────────────────────────────────
+// Promise.all отправляет оба запроса параллельно, а не по очереди
 onMounted(async () => {
-  isLoading.value = true
   try {
     const [sessList, supList] = await Promise.all([
       procurementApi.listSessions(0, 50),
       procurementApi.listSuppliers(),
     ])
-    sessions.value = sessList
+    sessions.value  = sessList
     suppliers.value = supList
   } catch {
-    // Если сервер еще не запущен, показываем нулевые/дефолтные значения
+    // Если сервер не запущен — показываем нули и пустое состояние
   } finally {
     isLoading.value = false
   }
 })
 
-// ── Приветствие ───────────────────────────────────────────────────────────────
+// ── Приветствие по времени суток ──────────────────────────────────────────────
 const greeting = computed(() => {
   const hour = new Date().getHours()
   if (hour < 12) return 'Доброе утро'
@@ -46,184 +57,144 @@ const greeting = computed(() => {
   return 'Добрый вечер'
 })
 
-// ── Карточки быстрых действий ─────────────────────────────────────────────────
-const visibleCards = [
-  {
-    id: 'upload',
-    label: 'Загрузить прайс-лист',
-    description: 'Импортируйте прайс-листы поставщиков (.xlsx / .csv) и запустите ML-сопоставление.',
-    to: '/upload',
-    icon: UploadCloud,
-    accentColor: 'emerald',
-  },
-  {
-    id: 'validation',
-    label: 'Очередь валидации и ML',
-    description: 'Проверяйте результаты работы Bi-Encoder + pgvector, корректируйте и утверждайте сессии.',
-    to: '/validation',
-    icon: CheckCircle,
-    accentColor: 'amber',
-  },
-  {
-    id: 'matrix',
-    label: 'Матрица цен и SplitOptimizer',
-    description: 'Сравнивайте предложения поставщиков, запускайте MILP-оптимизацию и выгружайте в 1С.',
-    to: '/matrix',
-    icon: Table,
-    accentColor: 'purple',
-  },
-]
+// Имя без фамилии для приветствия: «Иван Петров» → «Иван»
+const firstName = computed(() => auth.user?.name?.split(' ')[0] ?? '')
 
-// ── Живая статистика из бэкенда ───────────────────────────────────────────────
+// ── Метрики (пересчитываются автоматически при изменении sessions) ───────────
 const stats = computed(() => {
-  const totalSessions = sessions.value.length
-  const needValidation = sessions.value.filter(
-    (s) => s.status === 'PENDING' || s.status === 'PROCESSING' || s.status === 'COMPLETED',
-  ).length
-  const approvedCount = sessions.value.filter((s) => s.status === 'APPROVED').length
-
+  const inWork   = sessions.value.filter((s) => s.status !== 'APPROVED' && s.status !== 'FAILED').length
+  const approved = sessions.value.filter((s) => s.status === 'APPROVED').length
   return [
-    {
-      label: 'Закупочных сессий',
-      value: String(totalSessions),
-      icon: Package,
-      delta: `${approvedCount} утверждено (APPROVED)`,
-    },
-    {
-      label: 'Ожидают валидации / в работе',
-      value: String(needValidation),
-      icon: Clock,
-      delta: 'Готовы к проверке закупщиком',
-    },
-    {
-      label: 'Поставщиков в базе',
-      value: String(suppliers.value.length),
-      icon: Building2,
-      delta: 'Активные контрагенты',
-    },
+    { label: 'Всего сессий',        value: sessions.value.length,  icon: Package },
+    { label: 'В работе',            value: inWork,                 icon: Clock },
+    { label: 'Утверждено',          value: approved,               icon: CheckCircle2 },
+    { label: 'Поставщиков в базе',  value: suppliers.value.length, icon: Building2 },
   ]
 })
 
-function navigateTo(path: string) {
-  router.push(path)
+// Последние 5 сессий для таблицы (сортировка по дате — новые сверху)
+const recentSessions = computed(() =>
+  [...sessions.value]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, 5),
+)
+
+// ── Шаги процесса (карточки быстрых действий) ─────────────────────────────────
+const steps = [
+  { n: 1, title: 'Загрузите прайс',  text: 'Excel или CSV от поставщика — система сама распознает позиции.',          to: '/upload',     icon: UploadCloud },
+  { n: 2, title: 'Проверьте ML',     text: 'Подтвердите сопоставления: зелёные — уверенные, красные — требуют внимания.', to: '/validation', icon: ShieldCheck },
+  { n: 3, title: 'Рассчитайте сплит', text: 'Сравните цены и получите оптимальное распределение заказа + экспорт в 1С.', to: '/matrix',     icon: Table2 },
+]
+
+// ── Открыть сессию ────────────────────────────────────────────────────────────
+// Утверждённые сессии открываем сразу в матрице, остальные — на валидации
+function openSession(s: ProcurementSessionResponse) {
+  const path = s.status === 'APPROVED' ? '/matrix' : '/validation'
+  router.push({ path, query: { session_id: String(s.id) } })
 }
 </script>
 
 <template>
-  <div class="max-w-6xl mx-auto space-y-8">
-    <!-- Заголовок страницы -->
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+  <div class="space-y-8">
+    <!-- ── Заголовок ───────────────────────────────────────────────────────── -->
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <p class="text-slate-500 text-sm font-medium mb-1">
-          {{ greeting }},
-          <span class="text-blue-400">{{ auth.user?.name }}</span>
-        </p>
-        <h1 class="text-2xl font-bold text-white tracking-tight">
-          Добро пожаловать в TradeSync
-        </h1>
-        <p class="text-slate-400 text-sm mt-1.5 max-w-lg">
-          Управляйте закупочными сессиями, проверяйте ML-сопоставление шин и оптимизируйте распределение заказов между поставщиками.
-        </p>
+        <p class="text-sm font-medium text-brand-700">{{ greeting }}, {{ firstName }} 👋</p>
+        <h1 class="mt-1 text-3xl font-semibold tracking-tight text-zinc-900">Обзор закупок</h1>
       </div>
-
-      <!-- Бейдж роли и email пользователя -->
-      <div class="flex items-center gap-2 shrink-0">
-        <span class="text-xs text-slate-500 font-mono hidden sm:inline">{{ auth.user?.email }}</span>
-        <span
-          class="px-2.5 py-1 rounded-full text-xs font-semibold border"
-          :class="{
-            'bg-emerald-500/15 text-emerald-400 border-emerald-500/30':
-              auth.user?.role === 'Buyer' || auth.user?.role === 'Operator',
-            'bg-amber-500/15 text-amber-400 border-amber-500/30': auth.user?.role === 'Manager',
-            'bg-purple-500/15 text-purple-400 border-purple-500/30': auth.user?.role === 'Admin',
-          }"
-        >
-          {{ auth.user?.role }}
-        </span>
-      </div>
+      <BaseButton :icon="UploadCloud" @click="router.push('/upload')">Новая закупка</BaseButton>
     </div>
 
-    <!-- Статистические плашки -->
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <!-- ── Метрики ─────────────────────────────────────────────────────────── -->
+    <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
       <div
         v-for="stat in stats"
         :key="stat.label"
-        class="flex items-center gap-4 px-5 py-4 rounded-xl
-               bg-white/4 border border-white/8
-               hover:bg-white/6 hover:border-white/12
-               transition-all duration-200"
+        class="p-5 bg-white rounded-2xl ring-1 ring-zinc-200/70 shadow-soft"
       >
-        <div class="w-10 h-10 rounded-lg bg-blue-500/15 flex items-center justify-center shrink-0">
-          <component :is="stat.icon" class="w-5 h-5 text-blue-400" :stroke-width="1.75" />
+        <div class="flex items-center justify-between">
+          <p class="text-sm text-zinc-500">{{ stat.label }}</p>
+          <component :is="stat.icon" class="w-4 h-4 text-zinc-400" :stroke-width="1.9" />
         </div>
-        <div class="min-w-0">
-          <p class="text-xl font-bold text-white leading-none">{{ stat.value }}</p>
-          <p class="text-slate-400 text-xs mt-1 truncate">{{ stat.label }}</p>
-          <p class="text-slate-600 text-xs mt-0.5">{{ stat.delta }}</p>
-        </div>
+        <!-- Пока данные грузятся, показываем серую «заглушку» (skeleton) -->
+        <div v-if="isLoading" class="mt-3 h-8 w-12 rounded-lg bg-zinc-100 animate-pulse" />
+        <p v-else class="mt-2 text-3xl font-semibold font-mono tabular-nums text-zinc-900">{{ stat.value }}</p>
       </div>
     </div>
 
-    <!-- Быстрые действия -->
+    <!-- ── Шаги процесса ───────────────────────────────────────────────────── -->
     <div>
-      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-widest mb-4">
-        Быстрые действия
-      </h2>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <h2 class="mb-4 text-sm font-semibold text-zinc-900">Процесс закупки в три шага</h2>
+      <div class="grid gap-4 md:grid-cols-3">
         <button
-          v-for="card in visibleCards"
-          :key="card.id"
+          v-for="step in steps"
+          :key="step.n"
           type="button"
-          @click="navigateTo(card.to)"
-          class="group relative flex flex-col items-start gap-4 p-6 rounded-2xl text-left
-                 bg-white/4 border border-white/8
-                 hover:bg-white/7 hover:border-white/14 hover:shadow-xl hover:shadow-black/20
-                 hover:-translate-y-0.5
-                 transition-all duration-200 ease-out
-                 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer"
+          class="group relative p-6 text-left bg-white rounded-2xl ring-1 ring-zinc-200/70 shadow-soft
+                 hover:ring-brand-400 hover:-translate-y-0.5 transition-all duration-200 cursor-pointer"
+          @click="router.push(step.to)"
         >
-          <div
-            class="w-11 h-11 rounded-xl flex items-center justify-center transition-transform duration-200 group-hover:scale-110"
-            :class="{
-              'bg-emerald-500/15': card.accentColor === 'emerald',
-              'bg-amber-500/15':   card.accentColor === 'amber',
-              'bg-purple-500/15':  card.accentColor === 'purple',
-            }"
-          >
-            <component
-              :is="card.icon"
-              class="w-5.5 h-5.5"
-              :class="{
-                'text-emerald-400': card.accentColor === 'emerald',
-                'text-amber-400':   card.accentColor === 'amber',
-                'text-purple-400':  card.accentColor === 'purple',
-              }"
-              :stroke-width="1.75"
-            />
+          <div class="flex items-center justify-between">
+            <div class="flex items-center justify-center w-11 h-11 rounded-xl bg-zinc-100 group-hover:bg-brand-400 transition-colors">
+              <component :is="step.icon" class="w-5 h-5 text-zinc-700 group-hover:text-zinc-950" :stroke-width="1.9" />
+            </div>
+            <span class="text-4xl font-semibold font-mono text-zinc-100 group-hover:text-brand-200 transition-colors">
+              0{{ step.n }}
+            </span>
           </div>
-
-          <div class="flex-1 min-w-0">
-            <h3 class="text-base font-semibold text-white mb-1 group-hover:text-blue-300 transition-colors duration-150">
-              {{ card.label }}
-            </h3>
-            <p class="text-slate-400 text-sm leading-relaxed">
-              {{ card.description }}
-            </p>
-          </div>
-
-          <div
-            class="absolute bottom-5 right-5 w-7 h-7 rounded-full flex items-center justify-center
-                   bg-white/0 group-hover:bg-white/8
-                   transition-all duration-200"
-          >
-            <ArrowRight
-              class="w-4 h-4 text-slate-600 group-hover:text-slate-300 translate-x-0 group-hover:translate-x-0.5 transition-all duration-200"
-              :stroke-width="2"
-            />
-          </div>
+          <h3 class="mt-5 font-semibold text-zinc-900">{{ step.title }}</h3>
+          <p class="mt-1 text-sm leading-relaxed text-zinc-500">{{ step.text }}</p>
+          <p class="flex items-center gap-1 mt-4 text-sm font-semibold text-brand-700">
+            Перейти
+            <ArrowRight class="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+          </p>
         </button>
       </div>
     </div>
+
+    <!-- ── Последние сессии ────────────────────────────────────────────────── -->
+    <BaseCard title="Последние сессии" subtitle="Нажмите на строку, чтобы продолжить работу" :padded="false">
+      <EmptyState
+        v-if="!isLoading && recentSessions.length === 0"
+        :icon="Inbox"
+        title="Сессий пока нет"
+        hint="Загрузите первый прайс-лист поставщика — и здесь появится закупочная сессия."
+      >
+        <BaseButton :icon="UploadCloud" @click="router.push('/upload')">Загрузить прайс</BaseButton>
+      </EmptyState>
+
+      <table v-else class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs font-medium text-zinc-500">
+            <th class="px-6 py-3 font-medium">Сессия</th>
+            <th class="px-6 py-3 font-medium">Статус</th>
+            <th class="px-6 py-3 font-medium text-right">Сопоставлено</th>
+            <th class="px-6 py-3 font-medium text-right">Создана</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-zinc-100">
+          <tr
+            v-for="s in recentSessions"
+            :key="s.id"
+            class="hover:bg-zinc-50 cursor-pointer transition-colors"
+            @click="openSession(s)"
+          >
+            <td class="px-6 py-3.5">
+              <p class="font-medium text-zinc-900">{{ s.title }}</p>
+              <p class="text-xs font-mono text-zinc-400">#{{ s.id }}</p>
+            </td>
+            <td class="px-6 py-3.5">
+              <span class="px-2 py-0.5 rounded-full text-xs font-semibold" :class="sessionStatusMeta[s.status]?.cls">
+                {{ sessionStatusMeta[s.status]?.label ?? s.status }}
+              </span>
+            </td>
+            <td class="px-6 py-3.5 text-right font-mono tabular-nums text-zinc-700">
+              {{ s.matched_items }} / {{ s.total_items }}
+            </td>
+            <td class="px-6 py-3.5 text-right text-zinc-500">{{ formatShortDate(s.created_at) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </BaseCard>
   </div>
 </template>

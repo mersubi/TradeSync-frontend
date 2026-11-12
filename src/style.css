@@ -1,34 +1,73 @@
 /* src/style.css
    ─────────────────────────────────────────────────────────────────────────────
-   Tailwind CSS v4 entry-point.
-   In v4 the single @import replaces the three legacy @tailwind directives.
-   All design-token overrides and custom utilities go below the import.
+   Точка входа Tailwind CSS v4.
+   В v4 отдельный tailwind.config.js не нужен: вся настройка темы делается
+   прямо здесь, в блоке @theme. Это единственное место, где задаются цвета
+   и шрифты всего приложения («дизайн-токены»).
    ─────────────────────────────────────────────────────────────────────────────
 */
 
 @import "tailwindcss";
 
-/* ── TradeSync global base overrides ─────────────────────────────────────── */
+/* ── Дизайн-токены ───────────────────────────────────────────────────────────
+   Каждая переменная --color-* автоматически превращается в utility-классы.
+   Например, --color-brand-400 даёт классы bg-brand-400, text-brand-400 и т.д.
+   Чтобы поменять акцентный цвет во всём приложении, достаточно поменять
+   значения ниже (например, lime → emerald).
+*/
+@theme {
+  /* Шрифты: Inter для интерфейса, JetBrains Mono для цен и артикулов */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Фирменный (акцентный) цвет — свежий лайм */
+  --color-brand-50:  var(--color-lime-50);
+  --color-brand-100: var(--color-lime-100);
+  --color-brand-200: var(--color-lime-200);
+  --color-brand-300: var(--color-lime-300);
+  --color-brand-400: var(--color-lime-400);   /* фон главных кнопок        */
+  --color-brand-500: var(--color-lime-500);
+  --color-brand-600: var(--color-lime-600);   /* акцентный текст на белом  */
+  --color-brand-700: var(--color-lime-700);
+  --color-brand-800: var(--color-lime-800);
+
+  /* Мягкая тень для карточек: почти незаметная, «воздушная» */
+  --shadow-soft: 0 1px 2px 0 rgb(24 24 27 / 0.04), 0 4px 16px -4px rgb(24 24 27 / 0.06);
+}
+
+/* ── Базовые стили страницы ─────────────────────────────────────────────── */
 @layer base {
-  :root {
-    --color-brand: oklch(60% 0.22 275);   /* indigo-ish primary */
-    --color-surface: oklch(98% 0 0);
-    --color-surface-dark: oklch(14% 0.02 265);
-    font-synthesis: none;
-    text-rendering: optimizeLegibility;
+  html {
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-  }
-
-  *,
-  *::before,
-  *::after {
-    box-sizing: border-box;
   }
 
   body {
     margin: 0;
     min-height: 100dvh;
-    background-color: var(--color-surface);
+    background-color: var(--color-zinc-50);
+    color: var(--color-zinc-900);
+  }
+
+  /* Цвет выделения текста — в фирменном лаймовом тоне */
+  ::selection {
+    background-color: var(--color-lime-200);
+    color: var(--color-zinc-900);
+  }
+}
+
+/* ── Общий класс для полей ввода ────────────────────────────────────────────
+   Поля ввода (input, select) встречаются почти на каждом экране.
+   Чтобы не повторять длинную строку utility-классов, собираем их здесь
+   через @apply и в шаблонах пишем просто class="field".
+*/
+@layer components {
+  .field {
+    @apply w-full h-10 px-3.5 rounded-xl bg-white text-sm text-zinc-900
+           ring-1 ring-zinc-200 placeholder:text-zinc-400
+           transition-shadow duration-150
+           focus:outline-none focus:ring-2 focus:ring-brand-500
+           disabled:bg-zinc-50 disabled:text-zinc-400;
   }
 }

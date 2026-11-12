@@ -1,48 +1,56 @@
-<!-- src/views/UploadView.vue -->
+<!-- src/views/UploadView.vue
+     Шаг 1 процесса: загрузка прайс-листа поставщика (.xlsx / .xls / .csv).
+     После загрузки бэкенд запускает ML-сопоставление, а прогресс приходит
+     по WebSocket и показывается компонентом MLProgressBar.
+-->
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { procurementApi } from '@/api/procurement'
 import type { SupplierResponse, ProcurementSessionResponse } from '@/api/procurement'
 import MLProgressBar from '@/components/MLProgressBar.vue'
+import BaseCard from '@/components/ui/BaseCard.vue'
+import BaseButton from '@/components/ui/BaseButton.vue'
+import ProcessStepper from '@/components/ui/ProcessStepper.vue'
 import {
   UploadCloud,
   FileSpreadsheet,
-  Trash2,
+  X,
   CheckCircle2,
   AlertCircle,
-  Loader2,
-  FileUp,
   Plus,
   ArrowRight,
+  Lightbulb,
 } from '@lucide/vue'
 
 const router = useRouter()
 
 // ── Состояние загрузки файла ──────────────────────────────────────────────────
-const selectedFile = ref<File | null>(null)
-const isDragging = ref(false)
-const isUploading = ref(false)
-const uploadSuccess = ref(false)
-const errorMessage = ref<string | null>(null)
-const uploadedSessionId = ref<number | null>(null)
-const uploadedTotalItems = ref<number>(0)
+const selectedFile       = ref<File | null>(null)
+const isDragging         = ref(false)   // файл «висит» над зоной перетаскивания
+const isUploading        = ref(false)
+const uploadSuccess      = ref(false)
+const errorMessage       = ref<string | null>(null)
+const uploadedSessionId  = ref<number | null>(null)
+const uploadedTotalItems = ref(0)
 
 // ── Поставщики и сессии с бэкенда ─────────────────────────────────────────────
-const suppliers = ref<SupplierResponse[]>([])
-const sessions = ref<ProcurementSessionResponse[]>([])
+const suppliers          = ref<SupplierResponse[]>([])
+const sessions           = ref<ProcurementSessionResponse[]>([])
 const selectedSupplierId = ref<number | null>(null)
-const targetSessionId = ref<number | null>(null)
+const targetSessionId    = ref<number | null>(null) // null = создать новую сессию
 
-// Создание нового поставщика
+// ── Мини-форма «Новый поставщик» ──────────────────────────────────────────────
 const showNewSupplierForm = ref(false)
-const newSupplierName = ref('')
-const newSupplierInn = ref('')
-const isCreatingSupplier = ref(false)
+const newSupplierName     = ref('')
+const newSupplierInn      = ref('')
+const isCreatingSupplier  = ref(false)
 
+// Ссылка на скрытый <input type="file">, чтобы открыть диалог выбора по клику
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const ACCEPTED_EXTENSIONS = ['.csv', '.xls', '.xlsx']
 
+// ── Загрузка справочников при открытии страницы ───────────────────────────────
 onMounted(async () => {
   try {
     const [supList, sessList] = await Promise.all([
@@ -50,16 +58,15 @@ onMounted(async () => {
       procurementApi.listSessions(0, 30),
     ])
     suppliers.value = supList
+    // Дозагружать можно только в ещё не утверждённые сессии
     sessions.value = sessList.filter((s) => s.status !== 'APPROVED')
-    if (supList.length > 0) {
-      selectedSupplierId.value = supList[0].id
-    }
+    if (supList.length > 0) selectedSupplierId.value = supList[0].id
   } catch {
-    // Сервер может быть не запущен — продолжаем работу
+    // Сервер может быть не запущен — страница всё равно работает
   }
 })
 
-// Добавление нового поставщика (POST /api/v1/procurement/suppliers)
+// ── Создание поставщика (POST /api/v1/procurement/suppliers) ──────────────────
 async function handleCreateSupplier() {
   if (!newSupplierName.value.trim()) return
   isCreatingSupplier.value = true
@@ -75,361 +82,268 @@ async function handleCreateSupplier() {
     newSupplierInn.value = ''
     showNewSupplierForm.value = false
   } catch (err: any) {
-    errorMessage.value =
-      err?.response?.data?.detail || 'Не удалось создать поставщика на сервере'
+    errorMessage.value = err?.response?.data?.detail || 'Не удалось создать поставщика'
   } finally {
     isCreatingSupplier.value = false
   }
 }
 
+// Размер файла в человекочитаемом виде: 153600 → «150 КБ»
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 Байт'
-  const k = 1024
   const sizes = ['Байт', 'КБ', 'МБ', 'ГБ']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  return `${parseFloat((bytes / Math.pow(1024, i)).toFixed(1))} ${sizes[i]}`
 }
 
+// Проверяем расширение и запоминаем файл
 function validateAndSetFile(file: File) {
   errorMessage.value = null
   uploadSuccess.value = false
-
-  const fileName = file.name.toLowerCase()
-  const isValidExtension = ACCEPTED_EXTENSIONS.some((ext) => fileName.endsWith(ext))
-
-  if (!isValidExtension) {
-    errorMessage.value = 'Неподдерживаемый формат. Пожалуйста, загрузите .csv, .xls или .xlsx'
+  const isValid = ACCEPTED_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext))
+  if (!isValid) {
+    errorMessage.value = 'Неподдерживаемый формат. Загрузите файл .csv, .xls или .xlsx'
     return
   }
-
   selectedFile.value = file
 }
 
-function triggerFileInput() {
-  fileInputRef.value?.click()
-}
-
 function handleFileInputChange(event: Event) {
-  const target = event.target as HTMLInputElement
-  if (target.files && target.files.length > 0) {
-    validateAndSetFile(target.files[0])
-  }
+  const files = (event.target as HTMLInputElement).files
+  if (files && files.length > 0) validateAndSetFile(files[0])
 }
 
-function handleDragEnter(e: DragEvent) {
-  e.preventDefault()
-  e.stopPropagation()
-  isDragging.value = true
-}
-
-function handleDragOver(e: DragEvent) {
-  e.preventDefault()
-  e.stopPropagation()
-  isDragging.value = true
-}
-
-function handleDragLeave(e: DragEvent) {
-  e.preventDefault()
-  e.stopPropagation()
-  isDragging.value = false
-}
-
+// ── Drag & Drop ───────────────────────────────────────────────────────────────
+// Модификатор .prevent в шаблоне отменяет стандартное поведение браузера
+// (иначе он просто откроет файл в новой вкладке).
 function handleDrop(e: DragEvent) {
-  e.preventDefault()
-  e.stopPropagation()
   isDragging.value = false
-
-  if (e.dataTransfer && e.dataTransfer.files.length > 0) {
-    validateAndSetFile(e.dataTransfer.files[0])
-  }
+  const files = e.dataTransfer?.files
+  if (files && files.length > 0) validateAndSetFile(files[0])
 }
 
 function removeFile() {
   selectedFile.value = null
   uploadSuccess.value = false
   errorMessage.value = null
-  if (fileInputRef.value) {
-    fileInputRef.value.value = ''
-  }
+  if (fileInputRef.value) fileInputRef.value.value = ''
 }
 
-// ── Отправка файла на реальный бэкенд (/api/v1/procurement/upload) ─────────────
+// ── Отправка файла на сервер ──────────────────────────────────────────────────
+// Если выбрана существующая сессия — дозагружаем в неё, иначе создаём новую.
 async function handleSubmit() {
   if (!selectedFile.value || isUploading.value) return
-
   isUploading.value = true
   errorMessage.value = null
   uploadSuccess.value = false
 
   try {
     const res = targetSessionId.value
-      ? await procurementApi.uploadAdditionalFile(
-          targetSessionId.value,
-          selectedFile.value,
-          selectedSupplierId.value,
-        )
+      ? await procurementApi.uploadAdditionalFile(targetSessionId.value, selectedFile.value, selectedSupplierId.value)
       : await procurementApi.uploadFile(selectedFile.value, selectedSupplierId.value)
 
-    uploadedSessionId.value = res.session_id
+    uploadedSessionId.value  = res.session_id
     uploadedTotalItems.value = res.total_items
     uploadSuccess.value = true
   } catch (err: any) {
     errorMessage.value =
-      err?.response?.data?.detail ||
-      err?.message ||
-      'Ошибка при отправке файла на сервер. Проверьте, запущен ли бэкенд.'
+      err?.response?.data?.detail || err?.message || 'Ошибка отправки файла. Проверьте, запущен ли бэкенд.'
   } finally {
     isUploading.value = false
   }
 }
 
+// Цвет рамки зоны загрузки зависит от состояния
 const dropzoneClasses = computed(() => {
-  if (isDragging.value) {
-    return 'border-blue-500 bg-blue-500/10 scale-[1.01]'
-  }
-  if (selectedFile.value) {
-    return 'border-emerald-500/40 bg-emerald-500/5'
-  }
-  return 'border-white/15 hover:border-blue-500/50 hover:bg-white/[0.02]'
+  if (isDragging.value)   return 'border-brand-500 bg-brand-50'
+  if (selectedFile.value) return 'border-brand-300 bg-white'
+  return 'border-zinc-300 bg-white hover:border-brand-400 hover:bg-brand-50/40'
 })
+
+function goToValidation() {
+  router.push({ path: '/validation', query: { session_id: String(uploadedSessionId.value) } })
+}
 </script>
 
 <template>
-  <div class="max-w-4xl mx-auto space-y-8">
-    <!-- Заголовок страницы -->
-    <div class="border-b border-white/8 pb-6">
-      <div class="flex items-center gap-3 mb-2">
-        <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center">
-          <FileUp class="w-5 h-5 text-emerald-400" :stroke-width="1.75" />
-        </div>
-        <div>
-          <h1 class="text-2xl font-bold text-white tracking-tight">Загрузка прайс-листа</h1>
-          <p class="text-slate-400 text-sm mt-0.5">
-            Импорт спецификаций и цен поставщиков в форматах Excel и CSV с автоматическим ML-сопоставлением
-          </p>
-        </div>
+  <div class="space-y-8">
+    <!-- ── Заголовок и шаги процесса ───────────────────────────────────────── -->
+    <div class="space-y-5">
+      <ProcessStepper :current="1" />
+      <div>
+        <h1 class="text-3xl font-semibold tracking-tight text-zinc-900">Загрузка прайс-листа</h1>
+        <p class="mt-1 text-sm text-zinc-500">
+          Добавьте файл поставщика — ML-модель автоматически сопоставит каждую строку с эталонным каталогом шин.
+        </p>
       </div>
     </div>
 
-    <!-- Выбор поставщика и целевой сессии -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-900/60 border border-white/8 rounded-2xl p-5">
-      <div>
-        <div class="flex items-center justify-between mb-1.5">
-          <label class="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            Поставщик прайс-листа
-          </label>
-          <button
-            type="button"
-            @click="showNewSupplierForm = !showNewSupplierForm"
-            class="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 cursor-pointer"
-          >
-            <Plus class="w-3.5 h-3.5" />
-            <span>{{ showNewSupplierForm ? 'Отмена' : 'Новый поставщик' }}</span>
-          </button>
-        </div>
+    <div class="grid gap-6 lg:grid-cols-3">
+      <!-- ═════════════ ЛЕВАЯ КОЛОНКА: ФАЙЛ ═════════════ -->
+      <div class="space-y-4 lg:col-span-2">
+        <input
+          ref="fileInputRef"
+          type="file"
+          class="hidden"
+          accept=".csv,.xls,.xlsx"
+          @change="handleFileInputChange"
+        />
 
-        <select
-          v-model="selectedSupplierId"
-          class="w-full bg-slate-800 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+        <!-- Зона перетаскивания файла -->
+        <div
+          class="flex flex-col items-center justify-center min-h-72 p-8 rounded-2xl border-2 border-dashed
+                 text-center transition-colors duration-200"
+          :class="[dropzoneClasses, selectedFile ? '' : 'cursor-pointer']"
+          @dragenter.prevent="isDragging = true"
+          @dragover.prevent="isDragging = true"
+          @dragleave.prevent="isDragging = false"
+          @drop.prevent="handleDrop"
+          @click="!selectedFile && fileInputRef?.click()"
         >
-          <option :value="null">— Без привязки к поставщику —</option>
-          <option v-for="sup in suppliers" :key="sup.id" :value="sup.id">
-            {{ sup.name }} {{ sup.inn ? `(ИНН ${sup.inn})` : '' }}
-          </option>
-        </select>
+          <!-- Файл ещё не выбран -->
+          <template v-if="!selectedFile">
+            <div class="flex items-center justify-center w-16 h-16 mb-5 rounded-2xl bg-brand-400 shadow-lg shadow-brand-500/30">
+              <UploadCloud class="w-7 h-7 text-zinc-950" :stroke-width="2" />
+            </div>
+            <p class="text-base font-semibold text-zinc-900">Перетащите файл сюда</p>
+            <p class="mt-1 text-sm text-zinc-500">
+              или <span class="font-semibold text-brand-700 underline underline-offset-2">выберите на компьютере</span>
+            </p>
+            <div class="flex gap-2 mt-5">
+              <span
+                v-for="ext in ACCEPTED_EXTENSIONS"
+                :key="ext"
+                class="px-2 py-0.5 rounded-md bg-zinc-100 text-xs font-mono text-zinc-500"
+              >
+                {{ ext }}
+              </span>
+            </div>
+          </template>
 
-        <!-- Мини-форма создания поставщика -->
-        <div v-if="showNewSupplierForm" class="mt-3 p-3 rounded-xl bg-slate-950/80 border border-white/10 space-y-2.5">
-          <input
-            v-model="newSupplierName"
-            type="text"
-            placeholder="Наименование (например, ООО ШинТорг)"
-            class="w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-white/10 text-xs text-white"
-          />
-          <div class="flex items-center gap-2">
-            <input
-              v-model="newSupplierInn"
-              type="text"
-              placeholder="ИНН (необязательно)"
-              class="flex-1 px-3 py-1.5 rounded-lg bg-slate-800 border border-white/10 text-xs text-white"
-            />
-            <button
-              type="button"
-              @click="handleCreateSupplier"
-              :disabled="isCreatingSupplier || !newSupplierName.trim()"
-              class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white disabled:opacity-50 cursor-pointer"
-            >
-              Создать
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
-          Режим сессии
-        </label>
-        <select
-          v-model="targetSessionId"
-          class="w-full bg-slate-800 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-        >
-          <option :value="null">Создать новую закупочную сессию</option>
-          <option v-for="sess in sessions" :key="sess.id" :value="sess.id">
-            Дозагрузить в сессию #{{ sess.id }}: {{ sess.title }} ({{ sess.total_items }} поз.)
-          </option>
-        </select>
-      </div>
-    </div>
-
-    <!-- Основной блок формы загрузки -->
-    <div class="space-y-6">
-      <input
-        ref="fileInputRef"
-        type="file"
-        class="hidden"
-        accept=".csv, .xls, .xlsx"
-        @change="handleFileInputChange"
-      />
-
-      <!-- Drag and Drop зона -->
-      <div
-        class="relative border-2 border-dashed rounded-2xl p-8 sm:p-12 text-center transition-all duration-200 cursor-pointer select-none"
-        :class="dropzoneClasses"
-        @dragenter="handleDragEnter"
-        @dragover="handleDragOver"
-        @dragleave="handleDragLeave"
-        @drop="handleDrop"
-        @click="!selectedFile && triggerFileInput()"
-      >
-        <div v-if="!selectedFile" class="flex flex-col items-center justify-center space-y-4">
-          <div
-            class="w-16 h-16 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400"
-          >
-            <UploadCloud class="w-8 h-8 text-blue-400" :stroke-width="1.5" />
-          </div>
-
-          <div class="space-y-1">
-            <p class="text-base font-medium text-white">
-              Перетащите файл сюда или
+          <!-- Файл выбран: карточка файла -->
+          <div v-else class="w-full max-w-md">
+            <div class="flex items-center gap-4 p-4 rounded-xl bg-zinc-50 ring-1 ring-zinc-200">
+              <div class="flex items-center justify-center w-12 h-12 shrink-0 rounded-xl bg-brand-100">
+                <FileSpreadsheet class="w-6 h-6 text-brand-700" :stroke-width="1.75" />
+              </div>
+              <div class="flex-1 min-w-0 text-left">
+                <p class="text-sm font-semibold text-zinc-900 truncate">{{ selectedFile.name }}</p>
+                <p class="text-xs text-zinc-500">{{ formatFileSize(selectedFile.size) }}</p>
+              </div>
               <button
                 type="button"
-                class="text-blue-400 hover:text-blue-300 underline font-semibold focus:outline-none"
-                @click.stop="triggerFileInput"
+                title="Убрать файл"
+                class="p-2 rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                :disabled="isUploading"
+                @click.stop="removeFile"
               >
-                выберите на компьютере
+                <X class="w-4 h-4" />
               </button>
-            </p>
-            <p class="text-xs text-slate-500">
-              Поддерживаются форматы: .CSV, .XLS, .XLSX (до 50 МБ)
-            </p>
+            </div>
+
+            <BaseButton class="w-full mt-4" :loading="isUploading" :icon="ArrowRight" @click.stop="handleSubmit">
+              {{ isUploading ? 'Отправляем на сервер…' : 'Запустить ML-сопоставление' }}
+            </BaseButton>
           </div>
         </div>
 
-        <div
-          v-else
-          class="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-xl bg-slate-900/80 border border-white/10 cursor-default"
-          @click.stop
-        >
-          <div class="flex items-center gap-4 min-w-0">
-            <div class="w-12 h-12 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
-              <FileSpreadsheet class="w-6 h-6 text-emerald-400" :stroke-width="1.75" />
-            </div>
-            <div class="text-left min-w-0">
-              <p class="text-sm font-semibold text-white truncate max-w-xs sm:max-w-md">
-                {{ selectedFile.name }}
-              </p>
-              <p class="text-xs text-slate-400 mt-0.5">
-                {{ formatFileSize(selectedFile.size) }}
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            class="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors focus:outline-none cursor-pointer"
-            title="Удалить файл"
-            :disabled="isUploading"
-            @click="removeFile"
-          >
-            <Trash2 class="w-5 h-5" :stroke-width="1.75" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Сообщения об ошибках и успехе -->
-      <Transition name="fade-slide">
+        <!-- Ошибка -->
         <div
           v-if="errorMessage"
-          class="flex items-center gap-3 p-4 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-sm"
           role="alert"
+          class="flex items-center gap-3 p-4 rounded-xl bg-rose-50 text-sm text-rose-700 ring-1 ring-rose-200"
         >
-          <AlertCircle class="w-5 h-5 shrink-0 text-red-400" :stroke-width="1.75" />
-          <span>{{ errorMessage }}</span>
+          <AlertCircle class="w-5 h-5 shrink-0" :stroke-width="1.75" />
+          {{ errorMessage }}
         </div>
 
-        <div
-          v-else-if="uploadSuccess"
-          class="space-y-4"
-          role="status"
-        >
-          <div class="flex items-center justify-between gap-3 p-4 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-sm">
+        <!-- Успешная загрузка + живой прогресс ML -->
+        <div v-else-if="uploadSuccess" class="space-y-4" role="status">
+          <div class="flex flex-col gap-4 p-5 rounded-2xl bg-zinc-950 sm:flex-row sm:items-center sm:justify-between">
             <div class="flex items-center gap-3">
-              <CheckCircle2 class="w-5 h-5 shrink-0 text-emerald-400" :stroke-width="1.75" />
+              <CheckCircle2 class="w-6 h-6 shrink-0 text-brand-400" :stroke-width="1.75" />
               <div>
-                <p class="font-medium">
-                  Прайс-лист загружен! Сессия #{{ uploadedSessionId }} ({{ uploadedTotalItems }} позиций)
-                </p>
-                <p class="text-xs text-emerald-300/80 mt-0.5">
-                  Запущена задача ML-сопоставления в очереди Celery + pgvector.
+                <p class="font-semibold text-white">Прайс загружен — сессия #{{ uploadedSessionId }}</p>
+                <p class="text-sm text-zinc-400">
+                  <span class="font-mono">{{ uploadedTotalItems }}</span> позиций отправлено на ML-сопоставление
                 </p>
               </div>
             </div>
-
-            <button
-              v-if="uploadedSessionId"
-              type="button"
-              @click="router.push({ path: '/validation', query: { session_id: String(uploadedSessionId) } })"
-              class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shrink-0 cursor-pointer"
-            >
-              <span>К валидации сессии</span>
-              <ArrowRight class="w-3.5 h-3.5" />
-            </button>
+            <BaseButton :icon="ArrowRight" @click="goToValidation">К проверке</BaseButton>
           </div>
 
-          <!-- Живой прогресс по WebSocket /api/v1/ws/procurement/{session_id} -->
+          <!-- Прогресс приходит по WebSocket /api/v1/ws/procurement/{session_id} -->
           <MLProgressBar :session-id="uploadedSessionId" />
         </div>
-      </Transition>
+      </div>
 
-      <!-- Кнопка отправки на обработку -->
-      <div class="flex justify-end pt-2">
-        <button
-          type="button"
-          class="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl font-medium text-sm text-white shadow-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-          :class="[
-            !selectedFile || isUploading
-              ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-white/5'
-              : 'bg-blue-600 hover:bg-blue-500 shadow-blue-600/30 hover:shadow-blue-500/40 cursor-pointer',
-          ]"
-          :disabled="!selectedFile || isUploading"
-          @click="handleSubmit"
-        >
-          <Loader2 v-if="isUploading" class="w-4 h-4 animate-spin" />
-          <span>{{ isUploading ? 'Отправка на сервер...' : 'Отправить на обработку' }}</span>
-        </button>
+      <!-- ═════════════ ПРАВАЯ КОЛОНКА: НАСТРОЙКИ ═════════════ -->
+      <div class="space-y-4">
+        <BaseCard title="Параметры загрузки">
+          <div class="space-y-5">
+            <!-- Поставщик -->
+            <div>
+              <div class="flex items-center justify-between mb-1.5">
+                <label for="supplier" class="text-sm font-medium text-zinc-700">Поставщик</label>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 text-xs font-semibold text-brand-700 hover:underline cursor-pointer"
+                  @click="showNewSupplierForm = !showNewSupplierForm"
+                >
+                  <Plus class="w-3.5 h-3.5" />
+                  {{ showNewSupplierForm ? 'Отмена' : 'Новый' }}
+                </button>
+              </div>
+              <select id="supplier" v-model="selectedSupplierId" class="field">
+                <option :value="null">— Без привязки —</option>
+                <option v-for="sup in suppliers" :key="sup.id" :value="sup.id">
+                  {{ sup.name }}{{ sup.inn ? ` · ИНН ${sup.inn}` : '' }}
+                </option>
+              </select>
+
+              <!-- Мини-форма создания поставщика -->
+              <div v-if="showNewSupplierForm" class="mt-3 p-3 space-y-2 rounded-xl bg-zinc-50 ring-1 ring-zinc-200">
+                <input v-model="newSupplierName" type="text" placeholder="Название, напр. ООО «ШинТорг»" class="field" />
+                <input v-model="newSupplierInn" type="text" placeholder="ИНН (необязательно)" class="field font-mono" />
+                <BaseButton
+                  size="sm"
+                  class="w-full"
+                  :loading="isCreatingSupplier"
+                  :disabled="!newSupplierName.trim()"
+                  @click="handleCreateSupplier"
+                >
+                  Добавить поставщика
+                </BaseButton>
+              </div>
+            </div>
+
+            <!-- Сессия -->
+            <div>
+              <label for="session" class="block mb-1.5 text-sm font-medium text-zinc-700">Закупочная сессия</label>
+              <select id="session" v-model="targetSessionId" class="field">
+                <option :value="null">Создать новую сессию</option>
+                <option v-for="sess in sessions" :key="sess.id" :value="sess.id">
+                  Дозагрузить в #{{ sess.id }} · {{ sess.title }}
+                </option>
+              </select>
+              <p class="mt-1.5 text-xs text-zinc-500">
+                Дозагрузка позволяет сравнить прайсы нескольких поставщиков в одной матрице.
+              </p>
+            </div>
+          </div>
+        </BaseCard>
+
+        <!-- Подсказка для закупщика -->
+        <div class="flex gap-3 p-4 rounded-2xl bg-brand-50 ring-1 ring-brand-200">
+          <Lightbulb class="w-5 h-5 shrink-0 text-brand-700" :stroke-width="1.9" />
+          <div class="text-sm">
+            <p class="font-semibold text-zinc-900">Совет</p>
+            <p class="mt-0.5 text-zinc-600">
+              В файле должны быть колонки с наименованием, ценой и количеством. Порядок колонок не важен.
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </template>
-
-<style scoped>
-.fade-slide-enter-active,
-.fade-slide-leave-active {
-  transition: all 0.25s ease;
-}
-.fade-slide-enter-from,
-.fade-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-6px);
-}
-</style>
