@@ -1,46 +1,48 @@
 <!-- src/views/LoginView.vue -->
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/store/authStore'
 
-// ── Зависимости ───────────────────────────────────────────────────────────────
 const auth   = useAuthStore()
 const router = useRouter()
+const route  = useRoute()
 
-// ── Состояние формы ───────────────────────────────────────────────────────────
-const email    = ref('')
-const password = ref('')
+// ── Состояние формы (вход / регистрация) ──────────────────────────────────────
+const isRegisterMode = ref(false)
+const email          = ref('')
+const password       = ref('')
 
-// ── Отправка формы ────────────────────────────────────────────────────────────
+// ── Отправка формы на реальный бэкенд (/auth/login или /auth/register) ────────
 async function handleSubmit() {
   try {
-    await auth.login(email.value, password.value)
-    // После успешной авторизации переходим на дашборд
-    await router.push('/')
+    if (isRegisterMode.value) {
+      await auth.register(email.value, password.value)
+    } else {
+      await auth.login(email.value, password.value)
+    }
+    const redirectPath = (route.query.redirect as string) || '/'
+    await router.push(redirectPath)
   } catch {
-    // Ошибка уже записана в auth.error — отображаем её в шаблоне
+    // Ошибка отображается через auth.error
   }
 }
 
-// ── Тестовые аккаунты (только для разработки) ────────────────────────────────
-const mockCredentials = [
-  { email: 'operator@tradesync.io', role: 'Operator' },
-  { email: 'manager@tradesync.io',  role: 'Manager'  },
-  { email: 'admin@tradesync.io',    role: 'Admin'    },
+// ── Учетные записи бэкенда Server (из scripts/seed_db.py) ─────────────────────
+const seedCredentials = [
+  { email: 'admin@taires.com', password: 'admin123', role: 'Admin' },
+  { email: 'buyer@taires.com', password: 'buyer123', role: 'Buyer' },
 ]
 
-// Быстрое заполнение полей тестовыми данными
-function fillCredentials(cred: { email: string }) {
+function fillCredentials(cred: { email: string; password: string }) {
+  isRegisterMode.value = false
   email.value    = cred.email
-  password.value = 'password'
+  password.value = cred.password
 }
 </script>
 
 <template>
-  <!-- Полноэкранный контейнер с градиентным фоном -->
   <div class="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-4">
-
     <!-- Фоновые декоративные элементы -->
     <div class="absolute inset-0 overflow-hidden pointer-events-none">
       <div class="absolute -top-40 -right-40 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl"></div>
@@ -49,26 +51,34 @@ function fillCredentials(cred: { email: string }) {
 
     <!-- Карточка формы входа -->
     <div class="relative w-full max-w-md">
-
       <!-- Логотип и заголовок -->
       <div class="text-center mb-8">
         <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-blue-600 shadow-lg shadow-blue-600/40 mb-4">
-          <!-- Иконка логотипа TradeSync -->
           <svg class="w-8 h-8 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3 7h18M3 12h18M3 17h18" />
             <path stroke-linecap="round" stroke-linejoin="round" d="M7 3v18M17 3v18" opacity="0.5" />
           </svg>
         </div>
         <h1 class="text-2xl font-bold text-white tracking-tight">TradeSync</h1>
-        <p class="text-slate-400 text-sm mt-1">Система управления закупками B2B</p>
+        <p class="text-slate-400 text-sm mt-1">Система автоматизации закупок шин B2B</p>
       </div>
 
-      <!-- Форма входа -->
+      <!-- Форма входа / регистрации -->
       <div class="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
-        <h2 class="text-lg font-semibold text-white mb-6">Войти в систему</h2>
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-lg font-semibold text-white">
+            {{ isRegisterMode ? 'Регистрация аккаунта' : 'Войти в систему' }}
+          </h2>
+          <button
+            type="button"
+            @click="isRegisterMode = !isRegisterMode; auth.error = null"
+            class="text-xs text-blue-400 hover:text-blue-300 font-medium cursor-pointer"
+          >
+            {{ isRegisterMode ? 'Уже есть аккаунт? Войти' : 'Создать аккаунт' }}
+          </button>
+        </div>
 
         <form @submit.prevent="handleSubmit" class="space-y-5" novalidate>
-
           <!-- Поле Email -->
           <div>
             <label for="email" class="block text-sm font-medium text-slate-300 mb-1.5">
@@ -80,7 +90,7 @@ function fillCredentials(cred: { email: string }) {
               type="email"
               autocomplete="email"
               required
-              placeholder="you@tradesync.io"
+              placeholder="buyer@taires.com"
               class="w-full px-4 py-2.5 rounded-lg bg-white/8 border border-white/15 text-white placeholder-slate-500
                      focus:outline-none focus:ring-2 focus:ring-blue-500/70 focus:border-blue-500/50
                      transition-all duration-200 text-sm"
@@ -107,7 +117,7 @@ function fillCredentials(cred: { email: string }) {
             />
           </div>
 
-          <!-- Блок ошибки (отображается при неверных данных) -->
+          <!-- Блок ошибки -->
           <Transition name="fade-slide">
             <div
               v-if="auth.error"
@@ -121,7 +131,7 @@ function fillCredentials(cred: { email: string }) {
             </div>
           </Transition>
 
-          <!-- Кнопка входа -->
+          <!-- Кнопка отправки -->
           <button
             id="login-submit-btn"
             type="submit"
@@ -130,26 +140,31 @@ function fillCredentials(cred: { email: string }) {
                    bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/40 disabled:cursor-not-allowed
                    text-white font-semibold text-sm tracking-wide
                    shadow-lg shadow-blue-600/30 hover:shadow-blue-500/40
-                   transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-transparent"
+                   transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
-            <!-- Индикатор загрузки -->
             <svg v-if="auth.isLoading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
             </svg>
-            {{ auth.isLoading ? 'Вход...' : 'Войти' }}
+            {{
+              auth.isLoading
+                ? 'Подключение к серверу...'
+                : isRegisterMode
+                  ? 'Зарегистрироваться и войти'
+                  : 'Войти'
+            }}
           </button>
         </form>
       </div>
 
-      <!-- Тестовые аккаунты для разработчиков -->
+      <!-- Сидовые аккаунты бэкенда Server (scripts/seed_db.py) -->
       <div class="mt-5 bg-white/4 border border-white/8 rounded-xl p-4">
         <p class="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-3">
-          Тестовые аккаунты (пароль: <code class="text-slate-400">password</code>)
+          Аккаунты бэкенда (из <code class="text-slate-400">seed_db.py</code>)
         </p>
         <div class="space-y-1.5">
           <button
-            v-for="cred in mockCredentials"
+            v-for="cred in seedCredentials"
             :key="cred.email"
             type="button"
             @click="fillCredentials(cred)"
@@ -157,12 +172,13 @@ function fillCredentials(cred: { email: string }) {
                    bg-white/5 hover:bg-white/10 border border-white/8 hover:border-white/15
                    transition-all duration-150 group cursor-pointer"
           >
-            <span class="text-slate-300 text-xs font-mono">{{ cred.email }}</span>
+            <span class="text-slate-300 text-xs font-mono">
+              {{ cred.email }} <span class="text-slate-500">/ {{ cred.password }}</span>
+            </span>
             <span
               class="text-xs px-2 py-0.5 rounded-full font-medium"
               :class="{
-                'bg-emerald-500/20 text-emerald-400': cred.role === 'Operator',
-                'bg-amber-500/20 text-amber-400':    cred.role === 'Manager',
+                'bg-emerald-500/20 text-emerald-400': cred.role === 'Buyer',
                 'bg-purple-500/20 text-purple-400':  cred.role === 'Admin',
               }"
             >
@@ -171,13 +187,11 @@ function fillCredentials(cred: { email: string }) {
           </button>
         </div>
       </div>
-
     </div>
   </div>
 </template>
 
 <style scoped>
-/* Плавная анимация появления сообщения об ошибке */
 .fade-slide-enter-active,
 .fade-slide-leave-active {
   transition: all 0.25s ease;
@@ -188,7 +202,6 @@ function fillCredentials(cred: { email: string }) {
   transform: translateY(-6px);
 }
 
-/* Тонкий стеклянный фон для полей ввода */
 input[type='email'],
 input[type='password'] {
   background-color: rgb(255 255 255 / 0.05);

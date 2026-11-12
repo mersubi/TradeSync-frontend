@@ -1,3 +1,4 @@
+// vite.config.ts
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
@@ -10,13 +11,17 @@ export default defineConfig({
     },
   },
   server: {
-    // Настройка прокси для перехвата запросов к /auth
-    // Все пути начинающиеся на /auth будут перенаправлены на локальный бэкенд FastAPI
+    // Настройка прокси для всех эндпоинтов бэкенда FastAPI (Server)
     proxy: {
       '/auth': {
         target: 'http://localhost:8000',
-        changeOrigin: true
-      }
-    }
-  }
+        changeOrigin: true,
+      },
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        ws: true, // Проксирование WebSocket (/api/v1/ws/...)
+      },
+    },
+  },
 })

@@ -3,14 +3,18 @@ import axios from 'axios'
 import type { AxiosError, InternalAxiosRequestConfig } from 'axios'
 
 // ---------------------------------------------------------------------------
-// Создание экземпляра Axios
+// Создание экземпляра Axios для работы с бэкендом FastAPI
 // ---------------------------------------------------------------------------
-export const apiClient = axios.create({
-  baseURL: '', // Убрали import.meta.env...
-  headers: { 'Content-Type': 'application/json' },
-  timeout: 15_000,
-})
+// Если в .env случайно остался старый суффикс /api/v1, убираем его,
+// так как эндпоинты бэкенда разделены на /auth/* и /api/v1/*
+const rawBaseUrl = (import.meta.env.VITE_API_URL || '').trim()
+const normalizedBaseUrl = rawBaseUrl.replace(/\/api\/v1\/?$/, '')
 
+export const apiClient = axios.create({
+  baseURL: normalizedBaseUrl,
+  headers: { 'Content-Type': 'application/json' },
+  timeout: 30_000,
+})
 
 // ---------------------------------------------------------------------------
 // Интерцептор запросов (Request interceptor)
@@ -18,7 +22,6 @@ export const apiClient = axios.create({
 // ---------------------------------------------------------------------------
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // Извлекаем токен из localStorage
     const token = localStorage.getItem('ts_token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
@@ -35,14 +38,15 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      // При ошибке авторизации очищаем данные
+    const requestUrl = error.config?.url || ''
+    const isAuthEndpoint = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/register')
+
+    if (error.response?.status === 401 && !isAuthEndpoint) {
       localStorage.removeItem('ts_token')
       localStorage.removeItem('ts_user')
       sessionStorage.removeItem('ts_token')
       sessionStorage.removeItem('ts_user')
 
-      // Уведомляем приложение о необходимости редиректа на страницу логина
       window.dispatchEvent(new CustomEvent('tradesync:unauthorized'))
     }
     return Promise.reject(error)

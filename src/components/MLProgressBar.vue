@@ -1,12 +1,42 @@
 <!-- src/components/MLProgressBar.vue -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch, onMounted } from 'vue'
 import { useWebSocket } from '@/composables/useWebSocket'
 import { Loader2, CheckCircle, AlertCircle } from '@lucide/vue'
 
-const { progress, status, startMockProgress } = useWebSocket()
+const props = defineProps<{
+  sessionId?: number | null
+  autoConnect?: boolean
+}>()
 
-// Вычисляемое свойство для определения цвета полосы прогресса в зависимости от статуса
+const emit = defineEmits<{
+  (e: 'completed', sessionId?: number | null): void
+}>()
+
+const { progress, status, message, matchedItems, totalItems, connect, startMockProgress } = useWebSocket()
+
+onMounted(() => {
+  if (props.sessionId && props.autoConnect !== false) {
+    connect(props.sessionId)
+  }
+})
+
+watch(
+  () => props.sessionId,
+  (newId) => {
+    if (newId) {
+      connect(newId)
+    }
+  },
+)
+
+watch(status, (newStatus) => {
+  if (newStatus === 'completed') {
+    emit('completed', props.sessionId)
+  }
+})
+
+// Цвет полосы прогресса в зависимости от статуса
 const barColorClass = computed(() => {
   switch (status.value) {
     case 'error':
@@ -16,17 +46,18 @@ const barColorClass = computed(() => {
     case 'processing':
       return 'bg-blue-500'
     default:
-      return 'bg-gray-300'
+      return 'bg-slate-700'
   }
 })
 
-// Вычисляемое свойство для текстового описания текущего статуса
+// Текстовое описание текущего статуса
 const statusText = computed(() => {
+  if (message.value) return message.value
   switch (status.value) {
     case 'processing':
-      return 'Обработка данных ML...'
+      return 'Обработка данных ML (Bi-Encoder + pgvector)...'
     case 'completed':
-      return 'Обработка успешно завершена'
+      return 'ML-сопоставление успешно завершено'
     case 'error':
       return 'Ошибка при обработке'
     default:
@@ -36,58 +67,62 @@ const statusText = computed(() => {
 </script>
 
 <template>
-  <div class="w-full max-w-xl mx-auto p-6 bg-white rounded-xl shadow-sm border border-gray-100">
+  <div class="w-full p-5 bg-slate-900/70 rounded-2xl shadow-lg border border-white/10">
     <!-- Блок заголовка: иконка статуса, текст и проценты -->
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex items-center justify-between mb-3">
       <div class="flex items-center gap-3">
-        <!-- Показываем крутилку при обработке -->
-        <Loader2 
-          v-if="status === 'processing'" 
-          class="w-5 h-5 text-blue-500 animate-spin" 
+        <Loader2
+          v-if="status === 'processing'"
+          class="w-5 h-5 text-blue-400 animate-spin"
         />
-        <!-- Галочка при успешном завершении -->
-        <CheckCircle 
-          v-else-if="status === 'completed'" 
-          class="w-5 h-5 text-emerald-500" 
+        <CheckCircle
+          v-else-if="status === 'completed'"
+          class="w-5 h-5 text-emerald-400"
         />
-        <!-- Значок ошибки при сбое -->
-        <AlertCircle 
-          v-else-if="status === 'error'" 
-          class="w-5 h-5 text-red-500" 
+        <AlertCircle
+          v-else-if="status === 'error'"
+          class="w-5 h-5 text-red-400"
         />
-        <!-- Серый круглый контур для состояния ожидания -->
-        <div 
-          v-else 
-          class="w-5 h-5 rounded-full border-2 border-gray-300"
+        <div
+          v-else
+          class="w-5 h-5 rounded-full border-2 border-slate-600"
         ></div>
-        
-        <span class="font-medium text-gray-700">{{ statusText }}</span>
+
+        <div>
+          <span class="font-medium text-white text-sm">{{ statusText }}</span>
+          <p v-if="totalItems > 0" class="text-xs text-slate-400">
+            Сопоставлено: {{ matchedItems }} из {{ totalItems }} позиций
+          </p>
+        </div>
       </div>
-      
-      <!-- Текст с текущим процентом прогресса -->
-      <span class="text-sm font-semibold text-gray-500">{{ progress }}%</span>
+
+      <span class="text-sm font-semibold text-blue-400 font-mono">{{ progress }}%</span>
     </div>
 
     <!-- Контейнер для прогресс-бара -->
-    <div class="h-3 w-full bg-gray-100 rounded-full overflow-hidden mb-6">
-      <!-- Заполняющаяся часть бара с плавной анимацией ширины и цвета -->
-      <div 
+    <div class="h-2.5 w-full bg-slate-800 rounded-full overflow-hidden mb-4">
+      <div
         class="h-full rounded-full transition-all duration-500 ease-out"
         :class="barColorClass"
         :style="{ width: `${progress}%` }"
       ></div>
     </div>
 
-    <!-- Кнопка-заглушка для ручного запуска тестирования UI -->
-    <div class="flex justify-end">
-      <button 
-        @click="startMockProgress"
-        class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+    <!-- Кнопки управления -->
+    <div class="flex items-center justify-between gap-2">
+      <span v-if="sessionId" class="text-xs text-slate-500 font-mono">
+        Сессия #{{ sessionId }} (WS /api/v1/ws/procurement/{{ sessionId }})
+      </span>
+      <span v-else class="text-xs text-slate-500">Демо-режим прогресса</span>
+
+      <button
+        type="button"
+        @click="sessionId ? connect(sessionId) : startMockProgress()"
+        class="px-3.5 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         :disabled="status === 'processing'"
       >
-        Тест прогресса
+        {{ sessionId ? 'Обновить WS' : 'Тест прогресса' }}
       </button>
     </div>
   </div>
 </template>
-

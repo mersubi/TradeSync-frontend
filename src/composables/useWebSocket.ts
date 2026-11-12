@@ -1,34 +1,74 @@
 // src/composables/useWebSocket.ts
 import { ref, onUnmounted } from 'vue'
 
-export function useWebSocket(url: string = 'ws://localhost:8000/api/v1/ws/progress') {
-  // Реактивные переменные для отслеживания состояния
+export type ProgressStatus = 'idle' | 'processing' | 'completed' | 'error'
+
+export function useWebSocket() {
+  // Реактивные переменные для отслеживания состояния обработки на бэкенде
   const progress = ref(0)
-  const status = ref<'idle' | 'processing' | 'completed' | 'error'>('idle')
-  
+  const status = ref<ProgressStatus>('idle')
+  const message = ref<string>('')
+  const matchedItems = ref<number>(0)
+  const totalItems = ref<number>(0)
+
   let ws: WebSocket | null = null
   let mockInterval: ReturnType<typeof setInterval> | null = null
 
-  // Функция для подключения к реальному WebSocket (задел на будущее)
-  const connect = () => {
+  /**
+   * Подключение к реальному WebSocket бэкенда:
+   * WS /api/v1/ws/procurement/{session_id}?token=<JWT>
+   */
+  const connect = (sessionId: number, token?: string | null) => {
+    disconnect()
+
+    const jwtToken = token || localStorage.getItem('ts_token') || ''
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/procurement/${sessionId}?token=${encodeURIComponent(jwtToken)}`
+
     try {
-      ws = new WebSocket(url)
+      status.value = 'processing'
+      ws = new WebSocket(wsUrl)
 
       ws.onopen = () => {
-        // Подключение успешно установлено
-        console.log('WebSocket подключен:', url)
+        console.log('WebSocket подключен к сессии:', sessionId)
       }
 
       ws.onmessage = (event) => {
         try {
-          // Парсим входящие сообщения, ожидаем формат { "progress": 45, "status": "processing" }
           const data = JSON.parse(event.data)
-          
-          if (data.progress !== undefined) {
-            progress.value = data.progress
+
+          if (data.error) {
+            status.value = 'error'
+            message.value = data.error
+            return
           }
-          if (data.status !== undefined) {
-            status.value = data.status
+
+          // Бэкенд отправляет progress_percent (0..100) или progress
+          if (data.progress_percent !== undefined) {
+            progress.value = Math.round(Number(data.progress_percent))
+          } else if (data.progress !== undefined) {
+            progress.value = Math.round(Number(data.progress))
+          }
+
+          if (data.matched_items !== undefined) {
+            matchedItems.value = Number(data.matched_items)
+          }
+          if (data.total_items !== undefined) {
+            totalItems.value = Number(data.total_items)
+          }
+          if (data.message) {
+            message.value = data.message
+          }
+
+          // Преобразование статусов бэкенда (PENDING, PROCESSING, COMPLETED, APPROVED, FAILED)
+          const rawStatus = String(data.status || '').toUpperCase()
+          if (rawStatus === 'COMPLETED' || rawStatus === 'APPROVED') {
+            progress.value = 100
+            status.value = 'completed'
+          } else if (rawStatus === 'FAILED' || rawStatus === 'ERROR') {
+            status.value = 'error'
+          } else if (rawStatus === 'PROCESSING' || rawStatus === 'PENDING') {
+            status.value = 'processing'
           }
         } catch (e) {
           console.error('Ошибка парсинга сообщения от WebSocket:', e)
@@ -36,12 +76,10 @@ export function useWebSocket(url: string = 'ws://localhost:8000/api/v1/ws/progre
       }
 
       ws.onerror = (error) => {
-        status.value = 'error'
-        console.error('Ошибка WebSocket соединения:', error)
+        console.warn('Ошибка WebSocket соединения:', error)
       }
 
       ws.onclose = () => {
-        // Соединение закрыто
         console.log('WebSocket соединение закрыто')
       }
     } catch (e) {
@@ -50,7 +88,7 @@ export function useWebSocket(url: string = 'ws://localhost:8000/api/v1/ws/progre
     }
   }
 
-  // Функция для очистки ресурсов и закрытия соединения
+  // Очистка ресурсов и закрытие соединения
   const disconnect = () => {
     if (ws) {
       ws.close()
@@ -62,32 +100,25 @@ export function useWebSocket(url: string = 'ws://localhost:8000/api/v1/ws/progre
     }
   }
 
-  // Мок-функция для UI тестирования
+  // Мок-функция для UI-тестирования без запущенного воркера
   const startMockProgress = () => {
-    // Сбрасываем начальное состояние
+    disconnect()
     status.value = 'processing'
     progress.value = 0
-    
-    // Очищаем предыдущий интервал, если он есть
-    if (mockInterval) {
-      clearInterval(mockInterval)
-    }
-    
-    // Имитируем получение данных от сервера
+    message.value = 'Тестовая имитация ML-обработки...'
+
     mockInterval = setInterval(() => {
-      // Увеличиваем прогресс на случайное значение от 10 до 20
-      progress.value += Math.floor(Math.random() * 10) + 10
-      
+      progress.value += Math.floor(Math.random() * 15) + 10
       if (progress.value >= 100) {
         progress.value = 100
         status.value = 'completed'
+        message.value = 'Обработка успешно завершена'
         clearInterval(mockInterval!)
         mockInterval = null
       }
-    }, 500)
+    }, 400)
   }
 
-  // Очистка при уничтожении компонента
   onUnmounted(() => {
     disconnect()
   })
@@ -95,9 +126,11 @@ export function useWebSocket(url: string = 'ws://localhost:8000/api/v1/ws/progre
   return {
     progress,
     status,
+    message,
+    matchedItems,
+    totalItems,
     connect,
     disconnect,
-    startMockProgress
+    startMockProgress,
   }
 }
-

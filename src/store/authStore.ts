@@ -2,12 +2,11 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi } from '@/api/auth'
-import type { LoginResponse } from '@/api/auth'
 
 // ---------------------------------------------------------------------------
-// Типы (Types)
+// Типы ролей (включая роли бэкенда Server: 'Buyer' и 'Admin', а также фронтовые алиасы)
 // ---------------------------------------------------------------------------
-export type UserRole = 'Operator' | 'Manager' | 'Admin'
+export type UserRole = 'Buyer' | 'Admin' | 'Operator' | 'Manager'
 
 export interface AuthUser {
   id: string
@@ -16,13 +15,31 @@ export interface AuthUser {
   role: UserRole
 }
 
+/**
+ * Декодирует payload JWT-токена бэкенда FastAPI ({ sub: "1", role: "Admin" | "Buyer", exp: ... })
+ */
+function decodeJwtPayload(tokenStr: string): { sub?: string; role?: UserRole } {
+  try {
+    const parts = tokenStr.split('.')
+    if (parts.length < 2) return {}
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join(''),
+    )
+    return JSON.parse(jsonPayload)
+  } catch {
+    return {}
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Хранилище (Store)
 // ---------------------------------------------------------------------------
 export const useAuthStore = defineStore('auth', () => {
   // ── Состояние (State) ──────────────────────────────────────────────────
-  
-  // Читаем начальные данные из localStorage (ранее было sessionStorage)
   const user = ref<AuthUser | null>(
     JSON.parse(localStorage.getItem('ts_user') ?? 'null'),
   )
@@ -35,7 +52,13 @@ export const useAuthStore = defineStore('auth', () => {
   const userRole = computed<UserRole | null>(() => user.value?.role ?? null)
 
   function hasRole(roles: UserRole[]): boolean {
-    return !!userRole.value && roles.includes(userRole.value)
+    if (!userRole.value) return false
+    // Admin имеет доступ ко всем разделам; Buyer эквивалентен Operator/Manager
+    if (userRole.value === 'Admin') return true
+    if (userRole.value === 'Buyer' && (roles.includes('Buyer') || roles.includes('Operator'))) {
+      return true
+    }
+    return roles.includes(userRole.value)
   }
 
   // ── Вспомогательные функции (Helpers) ──────────────────────────────────
@@ -51,46 +74,65 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     localStorage.removeItem('ts_user')
     localStorage.removeItem('ts_token')
+    sessionStorage.removeItem('ts_user')
+    sessionStorage.removeItem('ts_token')
   }
 
   // ── Действия (Actions) ─────────────────────────────────────────────────
 
   /**
-   * Функция логина.
-   * Вызывает реальный метод API, извлекает токен и хардкодит данные пользователя,
-   * пока на бэкенде не появится эндпоинт /me.
+   * Авторизация через бэкенд POST /auth/login.
+   * Извлекает id пользователя и роль напрямую из JWT-токена бэкенда.
    */
   async function login(email: string, password: string): Promise<AuthUser> {
     isLoading.value = true
     error.value = null
 
     try {
-      // Отправляем реальный запрос
       const response = await authApi.login({ email, password })
-      
-      // Извлекаем токен (бэкенд может вернуть token или access_token)
-      const tokenStr = response.token || response.access_token
+      const tokenStr = response.access_token
       if (!tokenStr) {
         throw new Error('Токен не был получен от сервера')
       }
 
-      // Временно хардкодим пользователя (с ролью Admin, чтобы работали маршруты)
-      // В будущем здесь будет запрос к authApi.getMe() или извлечение из JWT
-      const mockUser: AuthUser = {
-        id: 'real-backend-mock-id',
-        name: 'John Doe',
-        email: email,
-        role: 'Admin' 
+      const payload = decodeJwtPayload(tokenStr)
+      const role: UserRole = payload.role || 'Buyer'
+      const displayName = email.split('@')[0] || 'Пользователь'
+
+      const authUser: AuthUser = {
+        id: payload.sub || '1',
+        name: displayName,
+        email,
+        role,
       }
 
-      // Сохраняем состояние
-      _persist(tokenStr, mockUser)
-      return mockUser
+      _persist(tokenStr, authUser)
+      return authUser
     } catch (err: any) {
       const message =
-        err?.response?.data?.detail || err?.message || 'Произошла непредвиденная ошибка.'
-      error.value = message
-      throw err 
+        err?.response?.data?.detail || err?.message || 'Ошибка соединения с сервером.'
+      error.value = typeof message === 'string' ? message : JSON.stringify(message)
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /**
+   * Регистрация нового пользователя через POST /auth/register с последующим автоматическим входом.
+   */
+  async function register(email: string, password: string): Promise<AuthUser> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await authApi.register({ email, password })
+      return await login(email, password)
+    } catch (err: any) {
+      const message =
+        err?.response?.data?.detail || err?.message || 'Ошибка при регистрации пользователя.'
+      error.value = typeof message === 'string' ? message : JSON.stringify(message)
+      throw err
     } finally {
       isLoading.value = false
     }
@@ -101,24 +143,21 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
   }
 
-  /** Вызывается при перехвате 401 ошибки в Axios */
   function forceLogout(): void {
     _clearSession()
     error.value = 'Срок действия вашей сессии истек. Пожалуйста, войдите снова.'
   }
 
   return {
-    // state
     user,
     token,
     isLoading,
     error,
-    // getters
     isAuthenticated,
     userRole,
     hasRole,
-    // actions
     login,
+    register,
     logout,
     forceLogout,
   }
